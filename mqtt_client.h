@@ -15,7 +15,7 @@ public:
     void loop();
     bool isConnected();
     void publishSensorData(const SensorData &data);
-    void publishAlert(float score);
+    void publishAlert(float score, float hr, float spo2);
 
 private:
     PubSubClient mqttClient;

@@ -25,6 +25,14 @@ MLModel mlModel;
 QueueHandle_t xQueueSensorData;
 QueueHandle_t xQueueAlerts;
 
+// Alert data structure
+struct AlertData
+{
+  float score;
+  float hr;
+  float spo2;
+};
+
 // --- ML Task (Core 0) ---
 void mlTask(void *pvParameters)
 {
@@ -50,7 +58,11 @@ void mlTask(void *pvParameters)
 
       if (score > 0.75)
       {
-        xQueueSend(xQueueAlerts, &score, pdMS_TO_TICKS(10));
+        AlertData alertData;
+        alertData.score = score;
+        alertData.hr = data.hr;
+        alertData.spo2 = data.spo2;
+        xQueueSend(xQueueAlerts, &alertData, pdMS_TO_TICKS(10));
       }
     }
   }
@@ -77,7 +89,7 @@ void setup()
 
   // Create RTOS queues
   xQueueSensorData = xQueueCreate(5, sizeof(SensorData));
-  xQueueAlerts = xQueueCreate(5, sizeof(float));
+  xQueueAlerts = xQueueCreate(5, sizeof(AlertData));
 
   if (xQueueSensorData == NULL || xQueueAlerts == NULL)
   {
@@ -134,11 +146,12 @@ void loop()
   }
 
   // Handle alerts
-  float alert_score;
-  if (xQueueReceive(xQueueAlerts, &alert_score, 0) == pdTRUE)
+  AlertData alertData;
+  if (xQueueReceive(xQueueAlerts, &alertData, 0) == pdTRUE)
   {
-    Serial.printf("[Main] ALERT: Abnormal vitals detected! Score=%.4f\n", alert_score);
-    mqttManager.publishAlert(alert_score);
+    Serial.printf("[Main] ALERT: Abnormal vitals detected! Score=%.4f, HR=%.1f, SPO2=%.1f\n",
+                  alertData.score, alertData.hr, alertData.spo2);
+    mqttManager.publishAlert(alertData.score, alertData.hr, alertData.spo2);
   }
 
   delay(10); // Allow context switch

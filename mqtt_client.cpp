@@ -151,7 +151,7 @@ void MQTTClientManager::publishSensorData(const SensorData &data)
     }
 }
 
-void MQTTClientManager::publishAlert(float score)
+void MQTTClientManager::publishAlert(float score, float hr, float spo2)
 {
     if (!mqttClient.connected())
     {
@@ -162,8 +162,10 @@ void MQTTClientManager::publishAlert(float score)
         }
     }
 
-    char payload[64];
-    int written = snprintf(payload, sizeof(payload), "{\"alert_score\":%.4f}", score);
+    char payload[128];
+    int written = snprintf(payload, sizeof(payload),
+                           "{\"alert_score\":%.4f,\"heart_rate\":%.1f,\"spo2\":%.1f}",
+                           score, hr, spo2);
     if (written < 0 || written >= (int)sizeof(payload))
     {
         Serial.println("[MQTT] Alert payload formatting failed.");
