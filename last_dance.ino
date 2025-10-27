@@ -9,6 +9,8 @@
 #include "wifi_manager.h"
 #include "mqtt_client.h"
 #include "ml_model.h"
+#include <Wire.h>
+#include "HT_SSD1306Wire.h"
 
 // RTOS
 #include "freertos/FreeRTOS.h"
@@ -32,6 +34,45 @@ struct AlertData
   float hr;
   float spo2;
 };
+
+// --- OLED (Heltec WiFi Kit 32) ---
+#define SDA_OLED 4
+#define SCL_OLED 15
+#define RST_OLED 16
+#define Vext 21 // Control external power for OLED on Heltec boards
+static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
+
+static inline void VextON()
+{
+  pinMode(Vext, OUTPUT);
+  digitalWrite(Vext, LOW); // LOW to enable Vext on Heltec
+}
+
+static void initDisplay()
+{
+  VextON();
+  delay(100);
+  // Initialize primary I2C bus for OLED on Heltec pins
+  Wire.begin(SDA_OLED, SCL_OLED);
+  display.init();
+  display.flipScreenVertically();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+}
+
+static void renderVitalsOnDisplay(float hr, float spo2)
+{
+  display.clear();
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 0, "ESP32 Health");
+
+  char line1[24];
+  char line2[24];
+  snprintf(line1, sizeof(line1), "HR: %.0f bpm", hr);
+  snprintf(line2, sizeof(line2), "SpO2: %.0f %%", spo2);
+  display.drawString(0, 24, line1);
+  display.drawString(0, 44, line2);
+  display.display();
+}
 
 // --- ML Task (Core 0) ---
 void mlTask(void *pvParameters)
@@ -76,8 +117,12 @@ void setup()
 
   Serial.println("\n\n=== ESP32 Health Monitor ===");
 
+  // Init OLED display
+  initDisplay();
+  renderVitalsOnDisplay(0, 0);
+
   // Initialize sensor
-  sensorManager.begin(I2C_SDA, I2C_SCL);
+  sensorManager.begin(I2C_SDA_MAX30102, I2C_SCL_MAX30102);
 
   // Connect WiFi
   wifiManager.connect(WIFI_SSID, WIFI_PASSWORD);
@@ -136,13 +181,23 @@ void loop()
   if (sensorManager.hasValidData() && (millis() - lastSendTime) > 500)
   {
     SensorData data = sensorManager.getCurrentData();
-
-    if (xQueueSend(xQueueSensorData, &data, pdMS_TO_TICKS(10)) == pdTRUE)
+    // Try to enqueue for ML (non-blocking) but don't gate OLED/MQTT on this
+    if (xQueueSend(xQueueSensorData, &data, 0) == pdTRUE)
     {
       Serial.println("[Main] Sensor data sent to ML queue");
-      mqttManager.publishSensorData(data);
-      lastSendTime = millis();
     }
+    else
+    {
+      Serial.println("[Main] ML queue full, skipping enqueue this cycle");
+    }
+
+    // Publish latest sensor data
+    mqttManager.publishSensorData(data);
+
+    // Update OLED with latest vitals regardless of queue state
+    renderVitalsOnDisplay(data.hr, data.spo2);
+
+    lastSendTime = millis();
   }
 
   // Handle alerts

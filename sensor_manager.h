@@ -3,8 +3,8 @@
 #include "MAX30105.h"
 #include "heartRate.h"
 
-#define I2C_SDA 21
-#define I2C_SCL 22
+#define I2C_SDA_MAX30102 17
+#define I2C_SCL_MAX30102 18
 
 // Sensor data structure
 struct SensorData

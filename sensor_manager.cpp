@@ -13,10 +13,11 @@ SensorManager::SensorManager()
 
 void SensorManager::begin(int sda, int scl)
 {
-    Wire.begin(sda, scl);
+    // Initialize dedicated I2C bus for sensor on Wire1
+    Wire1.begin(sda, scl);
     delay(100);
 
-    if (!particleSensor.begin(Wire, I2C_SPEED_FAST))
+    if (!particleSensor.begin(Wire1, I2C_SPEED_FAST))
     {
         Serial.println("MAX30102 not found!");
         while (1)

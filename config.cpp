@@ -1,7 +1,7 @@
 #include "config.h"
 
-const char *WIFI_SSID = "Tenda_BD9178";
-const char *WIFI_PASSWORD = "88888888";
+const char *WIFI_SSID = "Pixel3";
+const char *WIFI_PASSWORD = "12345678";
 
 const char *MQTT_BROKER = "1a7def9414ff449396cd64bccbde3eb6.s1.eu.hivemq.cloud";
 const int MQTT_PORT = 8883;
