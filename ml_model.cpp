@@ -59,8 +59,7 @@ void MLModel::setup()
     Serial.println("TFLite setup done.");
 }
 
-float MLModel::runInference(float hr, float spo2, float body_temperature,
-                            int age, float weight, float height, int gender)
+float MLModel::runInference(float hr, float spo2, float bmi)
 {
     if (!initialized || model_input == nullptr)
     {
@@ -71,21 +70,14 @@ float MLModel::runInference(float hr, float spo2, float body_temperature,
     // Normalize inputs
     float hr_norm = (hr - modelNorm.hr_mean) / modelNorm.hr_std;
     float spo2_norm = (spo2 - modelNorm.spo2_mean) / modelNorm.spo2_std;
-    float temp_norm = (body_temperature - modelNorm.body_temperature_mean) / modelNorm.body_temperature_std;
-    float age_norm = (age - modelNorm.age_mean) / modelNorm.age_std;
-    float weight_norm = (weight - modelNorm.weight_mean) / modelNorm.weight_std;
-    float height_norm = (height - modelNorm.height_mean) / modelNorm.height_std;
+    float bmi_norm = (bmi - modelNorm.bmi_mean) / modelNorm.bmi_std;
 
     // Fill input tensor
     if (model_input->type == kTfLiteFloat32)
     {
         model_input->data.f[0] = hr_norm;
         model_input->data.f[1] = spo2_norm;
-        model_input->data.f[2] = temp_norm;
-        model_input->data.f[3] = age_norm;
-        model_input->data.f[4] = weight_norm;
-        model_input->data.f[5] = height_norm;
-        model_input->data.f[6] = (float)gender;
+        model_input->data.f[2] = bmi_norm;
     }
     else
     {

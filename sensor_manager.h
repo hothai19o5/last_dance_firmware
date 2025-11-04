@@ -20,7 +20,8 @@ struct UserProfile
     float weight = 65.0;
     float height = 1.77;
     int age = 21;
-    float body_temperature = 37.0;
+    float bmr;
+    
 };
 
 class SensorManager
