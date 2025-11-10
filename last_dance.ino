@@ -127,7 +127,7 @@ void setup()
   renderDisplay(0, 0, 0, 0, 0, 0, 0);
 
   // Init BLE Service (highest priority for Mobile App gateway)
-  bleManager.begin("ESP32-Health-Watch");
+  bleManager.begin("Last Dance");
 
   // Init MPU6050 on same I2C bus as OLED (Wire)
   if (!mpuManager.begin(Wire, 0x68))
@@ -137,12 +137,6 @@ void setup()
 
   // Initialize sensor
   sensorManager.begin(I2C_SDA_MAX30102, I2C_SCL_MAX30102);
-
-  // WiFi and MQTT disabled in BLE-only mode
-  // wifiManager.connect(WIFI_SSID, WIFI_PASSWORD);
-  // mqttManager.begin(wifiManager.getClient(), MQTT_BROKER, MQTT_PORT,
-  //                   MQTT_USERNAME, MQTT_PASSWORD);
-  // mqttManager.connect();
 
   Serial.println("[System] Running in BLE-only mode. Mobile app is the gateway.");
 
@@ -173,9 +167,6 @@ void setup()
 // --- Main loop (Core 1) ---
 void loop()
 {
-  // WiFi/MQTT disabled in BLE-only mode
-  // All data sync happens via BLE notifications to mobile app
-
   // Read sensor data
   sensorManager.readSensorData();
   // Update step counter from MPU6050

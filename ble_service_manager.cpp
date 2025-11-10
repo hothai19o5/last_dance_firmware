@@ -111,7 +111,7 @@ void BLEServiceManager::onDisconnect(BLEServer *pServer)
 
 void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 {
-    std::string uuid = pCharacteristic->getUUID().toString();
+    std::string uuid = pCharacteristic->getUUID().toString().c_str();
 
     if (uuid == WEIGHT_CHAR_UUID)
     {

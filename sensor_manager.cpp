@@ -1,5 +1,4 @@
 #include "sensor_manager.h"
-#include "config.h"
 #include <Arduino.h>
 
 SensorManager::SensorManager()
