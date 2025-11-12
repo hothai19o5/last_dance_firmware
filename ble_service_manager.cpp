@@ -100,6 +100,11 @@ void BLEServiceManager::onConnect(BLEServer *pServer)
 {
     clientConnected_ = true;
     Serial.println("[BLE] Client connected!");
+    
+    // Set MTU to 512 bytes for better data transfer (default is 23)
+    // This allows sending longer JSON strings without chunking
+    pServer->updatePeerMTU(pServer->getConnId(), 512);
+    Serial.println("[BLE] MTU set to 512 bytes");
 }
 
 void BLEServiceManager::onDisconnect(BLEServer *pServer)
