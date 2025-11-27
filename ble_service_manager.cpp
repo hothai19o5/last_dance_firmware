@@ -12,7 +12,8 @@
 BLEServiceManager::BLEServiceManager()
     : pServer_(nullptr), pUserProfileService_(nullptr), pHealthDataService_(nullptr),
       pWeightChar_(nullptr), pHeightChar_(nullptr), pGenderChar_(nullptr), pAgeChar_(nullptr),
-      pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr), clientConnected_(false)
+      pStepCountEnabledChar_(nullptr), pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr),
+      clientConnected_(false), stepCountEnabled_(true)
 {
     // Khởi tạo hồ sơ người dùng mặc định
     userProfile_.gender = 1;    // Nam
@@ -80,6 +81,14 @@ bool BLEServiceManager::begin(const char *deviceName)
     pAgeChar_->setCallbacks(this);
     uint8_t defaultAge = (uint8_t)userProfile_.age;
     pAgeChar_->setValue(&defaultAge, 1);
+
+    // Characteristic: Bật/tắt đếm bước (READ + WRITE)
+    pStepCountEnabledChar_ = pUserProfileService_->createCharacteristic(
+        STEP_COUNT_ENABLED_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pStepCountEnabledChar_->setCallbacks(this);
+    uint8_t defaultStepEnabled = stepCountEnabled_ ? 1 : 0;
+    pStepCountEnabledChar_->setValue(&defaultStepEnabled, 1);
 
     pUserProfileService_->start();
 
@@ -187,6 +196,14 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
         userProfile_.age = (int)age;
         Serial.printf("[BLE] Age updated: %d\n", userProfile_.age);
     }
+    // Cập nhật bật/tắt đếm bước
+    else if (uuid == STEP_COUNT_ENABLED_CHAR_UUID)
+    {
+        uint8_t enabled = *(uint8_t *)pCharacteristic->getData();
+        stepCountEnabled_ = (enabled != 0);
+        Serial.printf("[BLE] Step count enabled: %s\n", stepCountEnabled_ ? "YES" : "NO");
+        return; // Không cần tính BMR
+    }
 
     // === Tính toán BMR (Basal Metabolic Rate) bằng công thức Mifflin-St Jeor ===
     // Công thức:
@@ -276,6 +293,15 @@ bool BLEServiceManager::isClientConnected() const
 UserProfile &BLEServiceManager::getUserProfile()
 {
     return userProfile_;
+}
+
+/**
+ * @brief Kiểm tra xem đếm bước có được bật không
+ * @return true nếu đếm bước được bật
+ */
+bool BLEServiceManager::isStepCountEnabled() const
+{
+    return stepCountEnabled_;
 }
 
 String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t steps, float calories, float alertScore)

@@ -18,8 +18,8 @@ static constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B; ///< Byte cao của X accelera
  */
 MPU6050Manager::MPU6050Manager()
     : wire_(nullptr), addr_(0x68), ax_(0), ay_(0), az_(0),
-      mag_g_(0.0f), prevRawMag_(0.0f), hpVal_(0.0f), alphaHP_(0.9f),
-      stepCount_(0), lastStepMs_(0), minStepIntervalMs_(300), stepThreshold_(0.18f) {}
+      mag_g_(0.0f), prevRawMag_(0.0f), hpVal_(0.0f), alphaHP_(0.97f),
+      stepCount_(0), lastStepMs_(0), minStepIntervalMs_(600), stepThreshold_(0.55f) {}
 
 /**
  * @brief Khởi tạo MPU6050 trên bus I2C được chỉ định
@@ -98,12 +98,29 @@ void MPU6050Manager::update()
 
     // Phát hiện đỉnh (peak) - bất kỳ khi nào HP magnitude vượt ngưỡng
     // và đủ thời gian đã trôi qua kể từ bước cuối cùng (tránh nhiễu)
+    static float prevHp = 0;
+    static bool rising = false;
+
     uint32_t now = millis();
-    if (hp > stepThreshold_ && (now - lastStepMs_) > minStepIntervalMs_)
+
+    // Phát hiện sườn lên
+    if (hp > prevHp && hp > 0)
     {
-        stepCount_++;      // Tăng bộ đếm bước
-        lastStepMs_ = now; // Cập nhật thời điểm bước cuối cùng
+        rising = true;
     }
+
+    // Phát hiện đỉnh thật sự (peak)
+    if (rising && hp < prevHp)
+    {
+        if (prevHp > stepThreshold_ && (now - lastStepMs_) > minStepIntervalMs_)
+        {
+            stepCount_++;
+            lastStepMs_ = now;
+        }
+        rising = false;
+    }
+
+    prevHp = hp;
 }
 
 /**

@@ -24,10 +24,11 @@
 // === UUID của User Profile Service ===
 // Dịch vụ này chứa các thông tin cá nhân từ ứng dụng di động
 #define USER_PROFILE_SERVICE_UUID "0000181C-0000-1000-8000-00805F9B34FB"
-#define WEIGHT_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB" ///< Cân nặng (kg)
-#define HEIGHT_CHAR_UUID "00002A8E-0000-1000-8000-00805F9B34FB" ///< Chiều cao (m)
-#define GENDER_CHAR_UUID "00002A8C-0000-1000-8000-00805F9B34FB" ///< Giới tính (1=nam, 0=nữ)
-#define AGE_CHAR_UUID "00002A80-0000-1000-8000-00805F9B34FB"    ///< Tuổi (năm)
+#define WEIGHT_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB"             ///< Cân nặng (kg)
+#define HEIGHT_CHAR_UUID "00002A8E-0000-1000-8000-00805F9B34FB"             ///< Chiều cao (m)
+#define GENDER_CHAR_UUID "00002A8C-0000-1000-8000-00805F9B34FB"             ///< Giới tính (1=nam, 0=nữ)
+#define AGE_CHAR_UUID "00002A80-0000-1000-8000-00805F9B34FB"                ///< Tuổi (năm)
+#define STEP_COUNT_ENABLED_CHAR_UUID "00002A81-0000-1000-8000-00805F9B34FB" ///< Bật/tắt đếm bước (1=bật, 0=tắt)
 
 // === UUID của Health Data Service ===
 // Dịch vụ này cung cấp dữ liệu sức khỏe theo thời gian thực
@@ -82,6 +83,10 @@ public:
     /// @return Tham chiếu UserProfile
     UserProfile &getUserProfile();
 
+    /// @brief Kiểm tra xem đếm bước có được bật không
+    /// @return true nếu đếm bước được bật
+    bool isStepCountEnabled() const;
+
 private:
     /// @brief Callback được gọi khi ứng dụng kết nối
     void onConnect(BLEServer *pServer) override;
@@ -98,16 +103,18 @@ private:
     BLEService *pHealthDataService_;  ///< Dịch vụ Health Data
 
     // Các Characteristic của User Profile Service
-    BLECharacteristic *pWeightChar_; ///< Cân nặng
-    BLECharacteristic *pHeightChar_; ///< Chiều cao
-    BLECharacteristic *pGenderChar_; ///< Giới tính
-    BLECharacteristic *pAgeChar_;    ///< Tuổi
+    BLECharacteristic *pWeightChar_;           ///< Cân nặng
+    BLECharacteristic *pHeightChar_;           ///< Chiều cao
+    BLECharacteristic *pGenderChar_;           ///< Giới tính
+    BLECharacteristic *pAgeChar_;              ///< Tuổi
+    BLECharacteristic *pStepCountEnabledChar_; ///< Bật/tắt đếm bước
 
     // Các Characteristic của Health Data Service
     BLECharacteristic *pHealthDataBatchChar_; ///< Dữ liệu sức khỏe (JSON)
     BLECharacteristic *pDeviceStatusChar_;    ///< Trạng thái thiết bị
 
     bool clientConnected_;    ///< Cờ: ứng dụng di động có kết nối hay không?
+    bool stepCountEnabled_;   ///< Cờ: bật/tắt đếm bước chân (default = true)
     UserProfile userProfile_; ///< Hồ sơ người dùng hiện tại
 
     /// @brief Tạo chuỗi JSON chứa dữ liệu sức khỏe để gửi qua BLE

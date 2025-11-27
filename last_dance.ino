@@ -146,7 +146,7 @@ static void renderDisplay(float hr, float spo2, float calories, int steps, int b
  * Chức năng:
  * 1. Nhận dữ liệu cảm biến từ hàng đợi xQueueSensorData
  * 2. Chạy suy diễn mô hình ML
- * 3. Nếu điểm cảnh báo > 0.75, gửi cảnh báo vào xQueueAlerts
+ * 3. Nếu điểm cảnh báo > 0.95, gửi cảnh báo vào xQueueAlerts
  * 4. Lặp lại vô hạn
  *
  * @param pvParameters Tham số được truyền khi tạo task (không dùng)
@@ -174,7 +174,7 @@ void mlTask(void *pvParameters)
           profile.weight / (profile.height * profile.height));
 
       // Nếu điểm cảnh báo cao (bất thường), gửi vào hàng đợi
-      if (score > 0.75)
+      if (score > 0.95)
       {
         AlertData alert;
         alert.score = score;
@@ -250,22 +250,30 @@ void setup()
  * @brief Main Loop - Chạy trên Core 1 (ưu tiên thấp)
  *
  * Chức năng chính:
- * 1. Đọc dữ liệu từ cảm biến liên tục
+ * 1. Đọc dữ liệu từ cảm biến mỗi 5 giây
  * 2. Cập nhật bộ đếm bước từ MPU6050
  * 3. Mỗi 500ms: gửi dữ liệu hợp lệ đến ML task
- * 4. Mỗi 1 giây: cập nhật UI (OLED và BLE)
- * 5. Xử lý các cảnh báo nhận được từ ML task
- *
- * Thời gian đọc cảm biến: cần được gọi nhanh (>100Hz nếu có thể)
- * để phát hiện nhịp tim chính xác
+ * 4. Mỗi 1 giây: cập nhật UI (OLED)
+ * 5. Mỗi 5 phút: gửi dữ liệu qua BLE
+ * 6. Xử lý các cảnh báo nhận được từ ML task (gửi ngay lập tức)
  */
 void loop()
 {
-  // === Đọc dữ liệu cảm biến ===
+  // === Đọc dữ liệu cảm biến (mỗi 5 giây) ===
+  // static unsigned long lastSensorReadTime = 0;
+  // if (millis() - lastSensorReadTime >= 1000)
+  // {
+  //   sensorManager.readSensorData();
+  //   lastSensorReadTime = millis();
+  // }
+
   sensorManager.readSensorData();
 
-  // === Cập nhật bộ đếm bước từ MPU6050 ===
-  mpuManager.update();
+  // === Cập nhật bộ đếm bước từ MPU6050 (nếu được bật) ===
+  if (bleManager.isStepCountEnabled())
+  {
+    mpuManager.update();
+  }
 
   // === Cập nhật calo tiêu thụ ===
   if (sensorManager.hasValidData())
@@ -310,10 +318,25 @@ void loop()
       // Cập nhật OLED
       renderDisplay(d.hr, d.spo2, calories, steps, 85, hour, minute);
 
-      // Cập nhật BLE Notify
-      bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
-
       lastUiUpdate = millis();
+    }
+
+    // === Gửi dữ liệu BLE (mỗi 5 phút) ===
+    static unsigned long lastBleNotifyTime = 0;
+    if (millis() - lastBleNotifyTime >= 300000) // 5 phút = 300000ms
+    {
+      SensorData d = sensorManager.getCurrentData();
+      uint32_t steps = mpuManager.getStepCount();
+      float calories = calorieManager.getTotalCalories();
+
+      // Gửi dữ liệu qua BLE nếu có kết nối
+      if (bleManager.isClientConnected())
+      {
+        bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
+        Serial.println("[Main] BLE data sent (5-minute interval)");
+      }
+
+      lastBleNotifyTime = millis();
     }
 
     lastSendTime = millis();
@@ -336,65 +359,4 @@ void loop()
   }
 
   delay(10); // Cho phép context switch (tránh watchdog timeout)
-}
-{
-  SensorData data = sensorManager.getCurrentData();
-  // Try to enqueue for ML (non-blocking)
-  if (xQueueSend(xQueueSensorData, &data, 0) == pdTRUE)
-  {
-    Serial.println("[Main] Sensor data sent to ML queue");
-  }
-  else
-  {
-    Serial.println("[Main] ML queue full, skipping enqueue this cycle");
-  }
-
-  // Update rate limit timestamp for ML/data pipeline
-  lastSendTime = millis();
-
-  // Periodic UI update (once per second) with real steps and current time
-  static unsigned long lastUiUpdate = 0;
-  if (millis() - lastUiUpdate > 1000)
-  {
-    SensorData d = sensorManager.getCurrentData();
-    uint32_t steps = mpuManager.getStepCount();
-    float calories = calorieManager.getTotalCalories();
-
-    // Use millis for time display in BLE-only mode (no NTP)
-    unsigned long totalSeconds = millis() / 1000;
-    int hour = (totalSeconds / 3600) % 24;
-    int minute = (totalSeconds / 60) % 60;
-
-    // Display real calories and steps
-    renderDisplay(d.hr, d.spo2, calories, (int)steps, 85, hour, minute);
-
-    // Notify BLE client if connected
-    if (bleManager.isClientConnected())
-    {
-      bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
-    }
-
-    lastUiUpdate = millis();
-  }
-
-  lastSendTime = millis();
-}
-
-// Handle alerts - send via BLE instead of MQTT
-AlertData alertData;
-if (xQueueReceive(xQueueAlerts, &alertData, 0) == pdTRUE)
-{
-  Serial.printf("[Main] ALERT: Abnormal vitals detected! Score=%.4f, HR=%.1f, SPO2=%.1f\n",
-                alertData.score, alertData.hr, alertData.spo2);
-  // In BLE-only mode, send alert with score to mobile app
-  if (bleManager.isClientConnected())
-  {
-    bleManager.notifyHealthDataWithAlert(alertData.hr, alertData.spo2,
-                                         mpuManager.getStepCount(),
-                                         calorieManager.getTotalCalories(),
-                                         alertData.score);
-  }
-}
-
-delay(10); // Allow context switch
 }
