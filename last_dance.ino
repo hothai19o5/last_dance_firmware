@@ -283,7 +283,7 @@ void loop()
     calorieManager.update(mpuManager.getStepCount(), data.hr, profile);
   }
 
-  // === Gửi dữ liệu đến ML Task (mỗi 500ms) ===
+  // === Gửi dữ liệu đến ML Task (mỗi 500ms) - chỉ khi có dữ liệu hợp lệ ===
   static unsigned long lastSendTime = 0;
   if (sensorManager.hasValidData() && (millis() - lastSendTime) > 500)
   {
@@ -300,46 +300,44 @@ void loop()
     }
 
     lastSendTime = millis();
+  }
 
-    // === Cập nhật UI (mỗi 1 giây) ===
-    static unsigned long lastUiUpdate = 0;
-    if (millis() - lastUiUpdate > 1000)
+  // === Cập nhật UI (mỗi 1 giây) - luôn chạy bất kể có dữ liệu MAX30102 hay không ===
+  static unsigned long lastUiUpdate = 0;
+  if (millis() - lastUiUpdate > 1000)
+  {
+    SensorData d = sensorManager.getCurrentData();
+    uint32_t steps = mpuManager.getStepCount();
+    float calories = calorieManager.getTotalCalories();
+
+    // Tính thời gian từ lúc khởi động (sử dụng millis)
+    // Vì chuyên độ BLE-only, không có NTP time server
+    unsigned long totalSeconds = millis() / 1000;
+    int hour = (totalSeconds / 3600) % 24;
+    int minute = (totalSeconds / 60) % 60;
+
+    // Cập nhật OLED
+    renderDisplay(d.hr, d.spo2, calories, steps, 85, hour, minute);
+
+    lastUiUpdate = millis();
+  }
+
+  // === Gửi dữ liệu BLE (mỗi 5 phút) - luôn chạy bất kể có dữ liệu MAX30102 hay không ===
+  static unsigned long lastBleNotifyTime = 0;
+  if (millis() - lastBleNotifyTime >= 300000) // 5 phút = 300000ms
+  {
+    SensorData d = sensorManager.getCurrentData();
+    uint32_t steps = mpuManager.getStepCount();
+    float calories = calorieManager.getTotalCalories();
+
+    // Gửi dữ liệu qua BLE nếu có kết nối
+    if (bleManager.isClientConnected())
     {
-      SensorData d = sensorManager.getCurrentData();
-      uint32_t steps = mpuManager.getStepCount();
-      float calories = calorieManager.getTotalCalories();
-
-      // Tính thời gian từ lúc khởi động (sử dụng millis)
-      // Vì chuyên độ BLE-only, không có NTP time server
-      unsigned long totalSeconds = millis() / 1000;
-      int hour = (totalSeconds / 3600) % 24;
-      int minute = (totalSeconds / 60) % 60;
-
-      // Cập nhật OLED
-      renderDisplay(d.hr, d.spo2, calories, steps, 85, hour, minute);
-
-      lastUiUpdate = millis();
+      bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
+      Serial.println("[Main] BLE data sent (5-minute interval)");
     }
 
-    // === Gửi dữ liệu BLE (mỗi 5 phút) ===
-    static unsigned long lastBleNotifyTime = 0;
-    if (millis() - lastBleNotifyTime >= 300000) // 5 phút = 300000ms
-    {
-      SensorData d = sensorManager.getCurrentData();
-      uint32_t steps = mpuManager.getStepCount();
-      float calories = calorieManager.getTotalCalories();
-
-      // Gửi dữ liệu qua BLE nếu có kết nối
-      if (bleManager.isClientConnected())
-      {
-        bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
-        Serial.println("[Main] BLE data sent (5-minute interval)");
-      }
-
-      lastBleNotifyTime = millis();
-    }
-
-    lastSendTime = millis();
+    lastBleNotifyTime = millis();
   }
 
   // === Xử lý các cảnh báo từ ML task ===
