@@ -1,4 +1,30 @@
-#include "sensor_manager.h"
+/**
+ * @file last_dance.ino
+ * @brief Chương trình chính cho thiết bị theo doi suc khoe
+ * @author Ho Xuan Thai
+ * @date 2025
+ *
+ * Tổng quan:
+ * - Thiết bị đo nhịp tim, SpO2, đếm bước, tính calo
+ * - Sử dụng máy học để phát hiện bất thường sức khỏe
+ * - Giao tiếp với ứng dụng di động qua BLE
+ * - Chạy trên ESP32 với RTOS (FreeRTOS)
+ *
+ * Kiến trúc:
+ * - Core 0: ML Task - chạy suy diễn và phát hiện bất thường (ưu tiên cao)
+ * - Core 1: Main Loop - đọc cảm biến và cập nhật UI
+ *
+ * Cảm biến:
+ * - MAX30102 (Wire1): Nhịp tim, SpO2
+ * - MPU6050 (Wire): Gia tốc, đếm bước
+ * - OLED (Heltec): Hiển thị thông tin
+ *
+ * BLE Services:
+ * - User Profile Service: Nhận cài đặt từ ứng dụng
+ * - Health Data Service: Gửi dữ liệu sức khỏe
+ */
+
+#include "max30102_manager.h"
 #include "ml_model.h"
 #include <Wire.h>
 #include "HT_SSD1306Wire.h"
@@ -12,50 +38,82 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
-// --- Global objects ---
-SensorManager sensorManager;
-MLModel mlModel;
-MPU6050Manager mpuManager;     // Step counter (MPU6050)
-BLEServiceManager bleManager;  // BLE Gateway for Mobile App
-CalorieManager calorieManager; // Calorie tracking
+// === Global Objects ===
+SensorManager sensorManager;   ///< Quản lý cảm biến MAX30102
+MLModel mlModel;               ///< Mô hình máy học
+MPU6050Manager mpuManager;     ///< Quản lý đếm bước
+BLEServiceManager bleManager;  ///< Quản lý BLE
+CalorieManager calorieManager; ///< Quản lý tính calo
 
-// --- RTOS Queues ---
-QueueHandle_t xQueueSensorData;
-QueueHandle_t xQueueAlerts;
+// === Hàng đợi RTOS ===
+QueueHandle_t xQueueSensorData; ///< Hàng đợi truyền dữ liệu cảm biến từ main đến ML task
+QueueHandle_t xQueueAlerts;     ///< Hàng đợi truyền cảnh báo từ ML task về main
 
-// Alert data structure
+/**
+ * @struct AlertData
+ * @brief Cấu trúc lưu trữ dữ liệu cảnh báo bất thường
+ */
 struct AlertData
 {
-  float score;
-  float hr;
-  float spo2;
+  float score; ///< Điểm cảnh báo (0-1) từ mô hình ML
+  float hr;    ///< Nhịp tim tại thời điểm cảnh báo
+  float spo2;  ///< SpO2 tại thời điểm cảnh báo
 };
 
-// --- OLED (Heltec WiFi Kit 32) ---
-#define SDA_OLED 4
-#define SCL_OLED 15
-#define RST_OLED 16
-#define Vext 21 // Control external power for OLED on Heltec boards
+// === OLED (Heltec WiFi Kit 32) ===
+#define SDA_OLED 4  ///< Chân SDA của OLED trên Heltec
+#define SCL_OLED 15 ///< Chân SCL của OLED trên Heltec
+#define RST_OLED 16 ///< Chân RESET của OLED trên Heltec
+#define Vext 21     ///< Chân điều khiển năng lượng OLED trên Heltec
+
 static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
 
+/**
+ * @brief Bật nguồn cho OLED (Heltec specific)
+ */
 static inline void VextON()
 {
   pinMode(Vext, OUTPUT);
-  digitalWrite(Vext, LOW); // LOW to enable Vext on Heltec
+  digitalWrite(Vext, LOW); // LOW = bật Vext trên Heltec
 }
 
+/**
+ * @brief Khởi tạo màn hình OLED
+ *
+ * Quá trình:
+ * 1. Bật nguồn OLED
+ * 2. Khởi tạo Wire (I2C) với chân được chỉ định
+ * 3. Khởi tạo OLED driver
+ * 4. Lật màn hình dọc và cài đặt căn lề trái
+ */
 static void initDisplay()
 {
   VextON();
   delay(100);
-  // Initialize primary I2C bus for OLED on Heltec pins
+  // Khởi tạo bus I2C cho OLED trên chân Heltec
   Wire.begin(SDA_OLED, SCL_OLED);
   display.init();
   display.flipScreenVertically();
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 }
 
-//
+/**
+ * @brief Cập nhật hiển thị thông tin sức khỏe trên OLED
+ *
+ * Hiển thị:
+ * - Dòng 1: Nhịp tim (BPM) | Pin (%)
+ * - Dòng 2: SpO2 (%)
+ * - Dòng 3: Calo (kcal)
+ * - Dòng 4: Bước | Giờ:phút
+ *
+ * @param hr Nhịp tim
+ * @param spo2 SpO2
+ * @param calories Calo tiêu thụ
+ * @param steps Số bước
+ * @param batteryLevel Pin (%)
+ * @param hour Giờ
+ * @param minute Phút
+ */
 static void renderDisplay(float hr, float spo2, float calories, int steps, int batteryLevel, int hour, int minute)
 {
   display.clear();
@@ -82,7 +140,17 @@ static void renderDisplay(float hr, float spo2, float calories, int steps, int b
   display.display();
 }
 
-// --- ML Task (Core 0) ---
+/**
+ * @brief ML Task - Chạy trên Core 0 (ưu tiên cao)
+ *
+ * Chức năng:
+ * 1. Nhận dữ liệu cảm biến từ hàng đợi xQueueSensorData
+ * 2. Chạy suy diễn mô hình ML
+ * 3. Nếu điểm cảnh báo > 0.75, gửi cảnh báo vào xQueueAlerts
+ * 4. Lặp lại vô hạn
+ *
+ * @param pvParameters Tham số được truyền khi tạo task (không dùng)
+ */
 void mlTask(void *pvParameters)
 {
   Serial.println("ML Task started (Core 0)");
@@ -91,30 +159,44 @@ void mlTask(void *pvParameters)
   SensorData data;
   for (;;)
   {
+    // Chờ nhận dữ liệu từ main task
     if (xQueueReceive(xQueueSensorData, &data, portMAX_DELAY) == pdTRUE)
     {
       Serial.printf("[ML] Got data: HR=%.1f, SPO2=%.1f\n", data.hr, data.spo2);
 
+      // Lấy hồ sơ người dùng từ BLE
       UserProfile &profile = sensorManager.getUserProfile();
+
+      // Tính BMI: cân nặng / (chiều cao^2)
       float score = mlModel.runInference(
           data.hr,
           data.spo2,
-          profile.weight / (profile.height * profile.height) // BMI
-      );
+          profile.weight / (profile.height * profile.height));
 
+      // Nếu điểm cảnh báo cao (bất thường), gửi vào hàng đợi
       if (score > 0.75)
       {
-        AlertData alertData;
-        alertData.score = score;
-        alertData.hr = data.hr;
-        alertData.spo2 = data.spo2;
-        xQueueSend(xQueueAlerts, &alertData, pdMS_TO_TICKS(10));
+        AlertData alert;
+        alert.score = score;
+        alert.hr = data.hr;
+        alert.spo2 = data.spo2;
+        xQueueSend(xQueueAlerts, &alert, 0);
       }
     }
   }
 }
 
-// --- Setup ---
+/**
+ * @brief Setup - Khởi tạo toàn bộ hệ thống
+ *
+ * Thực hiện các bước:
+ * 1. Khởi tạo Serial (debug)
+ * 2. Khởi tạo màn hình OLED
+ * 3. Khởi tạo BLE
+ * 4. Khởi tạo cảm biến (MAX30102, MPU6050)
+ * 5. Tạo các hàng đợi RTOS
+ * 6. Tạo ML Task trên Core 0
+ */
 void setup()
 {
   Serial.begin(115200);
@@ -122,70 +204,84 @@ void setup()
 
   Serial.println("\n\n=== ESP32 Health Monitor ===");
 
-  // Init OLED display
+  // Khởi tạo màn hình OLED
   initDisplay();
   renderDisplay(0, 0, 0, 0, 0, 0, 0);
 
-  // Init BLE Service (highest priority for Mobile App gateway)
+  // Khởi tạo BLE (ưu tiên cao vì là gateway chính với ứng dụng di động)
   bleManager.begin("Last Dance");
 
-  // Init MPU6050 on same I2C bus as OLED (Wire)
+  // Khởi tạo MPU6050 trên bus I2C chính (đếm bước)
   if (!mpuManager.begin(Wire, 0x68))
   {
     Serial.println("[MPU6050] Init failed (check wiring). Steps will remain 0.");
   }
 
-  // Initialize sensor
+  // Khởi tạo cảm biến MAX30102 trên Wire1 (nhịp tim + SpO2)
   sensorManager.begin(I2C_SDA_MAX30102, I2C_SCL_MAX30102);
 
   Serial.println("[System] Running in BLE-only mode. Mobile app is the gateway.");
 
-  // Create RTOS queues
-  xQueueSensorData = xQueueCreate(5, sizeof(SensorData));
+  // Tạo các hàng đợi RTOS
+  xQueueSensorData = xQueueCreate(5, sizeof(SensorData)); // Hàng đợi 5 phần tử
   xQueueAlerts = xQueueCreate(5, sizeof(AlertData));
 
   if (xQueueSensorData == NULL || xQueueAlerts == NULL)
   {
     Serial.println("Queue creation failed!");
     while (1)
-      ;
+      ; // Dừng nếu tạo hàng đợi thất bại
   }
 
-  // Create ML Task on Core 0
+  // Tạo ML Task trên Core 0 với ưu tiên cao
   xTaskCreatePinnedToCore(
-      mlTask,
-      "MLTask",
-      10240,
-      NULL,
-      1,
-      NULL,
-      0);
+      mlTask,   // Hàm task
+      "MLTask", // Tên task
+      10240,    // Kích thước stack (byte)
+      NULL,     // Tham số
+      1,        // Ưu tiên (0=thấp, 3=cao)
+      NULL,     // Handle task
+      0);       // Core 0
 
   Serial.println("Setup complete. Reading sensor...");
 }
 
-// --- Main loop (Core 1) ---
+/**
+ * @brief Main Loop - Chạy trên Core 1 (ưu tiên thấp)
+ *
+ * Chức năng chính:
+ * 1. Đọc dữ liệu từ cảm biến liên tục
+ * 2. Cập nhật bộ đếm bước từ MPU6050
+ * 3. Mỗi 500ms: gửi dữ liệu hợp lệ đến ML task
+ * 4. Mỗi 1 giây: cập nhật UI (OLED và BLE)
+ * 5. Xử lý các cảnh báo nhận được từ ML task
+ *
+ * Thời gian đọc cảm biến: cần được gọi nhanh (>100Hz nếu có thể)
+ * để phát hiện nhịp tim chính xác
+ */
 void loop()
 {
-  // Read sensor data
+  // === Đọc dữ liệu cảm biến ===
   sensorManager.readSensorData();
-  // Update step counter from MPU6050
+
+  // === Cập nhật bộ đếm bước từ MPU6050 ===
   mpuManager.update();
 
-  // Update calorie tracker with current steps and HR
+  // === Cập nhật calo tiêu thụ ===
   if (sensorManager.hasValidData())
   {
     SensorData data = sensorManager.getCurrentData();
-    UserProfile &profile = bleManager.getUserProfile(); // Use BLE-synced profile
+    UserProfile &profile = bleManager.getUserProfile(); // Lấy hồ sơ từ BLE
     calorieManager.update(mpuManager.getStepCount(), data.hr, profile);
-  };
+  }
 
-  // Send valid data to ML task
+  // === Gửi dữ liệu đến ML Task (mỗi 500ms) ===
   static unsigned long lastSendTime = 0;
   if (sensorManager.hasValidData() && (millis() - lastSendTime) > 500)
   {
     SensorData data = sensorManager.getCurrentData();
-    // Try to enqueue for ML (non-blocking)
+
+    // Thử đưa vào hàng đợi (non-blocking)
     if (xQueueSend(xQueueSensorData, &data, 0) == pdTRUE)
     {
       Serial.println("[Main] Sensor data sent to ML queue");
@@ -195,10 +291,9 @@ void loop()
       Serial.println("[Main] ML queue full, skipping enqueue this cycle");
     }
 
-    // Update rate limit timestamp for ML/data pipeline
     lastSendTime = millis();
 
-    // Periodic UI update (once per second) with real steps and current time
+    // === Cập nhật UI (mỗi 1 giây) ===
     static unsigned long lastUiUpdate = 0;
     if (millis() - lastUiUpdate > 1000)
     {
@@ -206,19 +301,17 @@ void loop()
       uint32_t steps = mpuManager.getStepCount();
       float calories = calorieManager.getTotalCalories();
 
-      // Use millis for time display in BLE-only mode (no NTP)
+      // Tính thời gian từ lúc khởi động (sử dụng millis)
+      // Vì chuyên độ BLE-only, không có NTP time server
       unsigned long totalSeconds = millis() / 1000;
       int hour = (totalSeconds / 3600) % 24;
       int minute = (totalSeconds / 60) % 60;
 
-      // Display real calories and steps
-      renderDisplay(d.hr, d.spo2, calories, (int)steps, 85, hour, minute);
+      // Cập nhật OLED
+      renderDisplay(d.hr, d.spo2, calories, steps, 85, hour, minute);
 
-      // Notify BLE client if connected
-      if (bleManager.isClientConnected())
-      {
-        bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
-      }
+      // Cập nhật BLE Notify
+      bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
 
       lastUiUpdate = millis();
     }
@@ -226,21 +319,82 @@ void loop()
     lastSendTime = millis();
   }
 
-  // Handle alerts - send via BLE instead of MQTT
+  // === Xử lý các cảnh báo từ ML task ===
   AlertData alertData;
   if (xQueueReceive(xQueueAlerts, &alertData, 0) == pdTRUE)
   {
     Serial.printf("[Main] ALERT: Abnormal vitals detected! Score=%.4f, HR=%.1f, SPO2=%.1f\n",
                   alertData.score, alertData.hr, alertData.spo2);
-    // In BLE-only mode, send alert with score to mobile app
+
+    // Trong chế độ BLE-only, gửi cảnh báo cùng điểm số đến ứng dụng di động
     if (bleManager.isClientConnected())
     {
-      bleManager.notifyHealthDataWithAlert(alertData.hr, alertData.spo2,
-                                           mpuManager.getStepCount(),
-                                           calorieManager.getTotalCalories(),
-                                           alertData.score);
+      uint32_t steps = mpuManager.getStepCount();
+      float calories = calorieManager.getTotalCalories();
+      bleManager.notifyHealthDataWithAlert(alertData.hr, alertData.spo2, steps, calories, alertData.score);
     }
   }
 
-  delay(10); // Allow context switch
+  delay(10); // Cho phép context switch (tránh watchdog timeout)
+}
+{
+  SensorData data = sensorManager.getCurrentData();
+  // Try to enqueue for ML (non-blocking)
+  if (xQueueSend(xQueueSensorData, &data, 0) == pdTRUE)
+  {
+    Serial.println("[Main] Sensor data sent to ML queue");
+  }
+  else
+  {
+    Serial.println("[Main] ML queue full, skipping enqueue this cycle");
+  }
+
+  // Update rate limit timestamp for ML/data pipeline
+  lastSendTime = millis();
+
+  // Periodic UI update (once per second) with real steps and current time
+  static unsigned long lastUiUpdate = 0;
+  if (millis() - lastUiUpdate > 1000)
+  {
+    SensorData d = sensorManager.getCurrentData();
+    uint32_t steps = mpuManager.getStepCount();
+    float calories = calorieManager.getTotalCalories();
+
+    // Use millis for time display in BLE-only mode (no NTP)
+    unsigned long totalSeconds = millis() / 1000;
+    int hour = (totalSeconds / 3600) % 24;
+    int minute = (totalSeconds / 60) % 60;
+
+    // Display real calories and steps
+    renderDisplay(d.hr, d.spo2, calories, (int)steps, 85, hour, minute);
+
+    // Notify BLE client if connected
+    if (bleManager.isClientConnected())
+    {
+      bleManager.notifyHealthData(d.hr, d.spo2, steps, calories);
+    }
+
+    lastUiUpdate = millis();
+  }
+
+  lastSendTime = millis();
+}
+
+// Handle alerts - send via BLE instead of MQTT
+AlertData alertData;
+if (xQueueReceive(xQueueAlerts, &alertData, 0) == pdTRUE)
+{
+  Serial.printf("[Main] ALERT: Abnormal vitals detected! Score=%.4f, HR=%.1f, SPO2=%.1f\n",
+                alertData.score, alertData.hr, alertData.spo2);
+  // In BLE-only mode, send alert with score to mobile app
+  if (bleManager.isClientConnected())
+  {
+    bleManager.notifyHealthDataWithAlert(alertData.hr, alertData.spo2,
+                                         mpuManager.getStepCount(),
+                                         calorieManager.getTotalCalories(),
+                                         alertData.score);
+  }
+}
+
+delay(10); // Allow context switch
 }

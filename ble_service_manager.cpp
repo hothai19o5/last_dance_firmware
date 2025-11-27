@@ -1,34 +1,55 @@
+/**
+ * @file ble_service_manager.cpp
+ * @brief Triển khai quản lý dịch vụ BLE
+ */
+
 #include "ble_service_manager.h"
 #include <ArduinoJson.h>
 
+/**
+ * @brief Constructor - khởi tạo các biến thành viên và giá trị mặc định
+ */
 BLEServiceManager::BLEServiceManager()
     : pServer_(nullptr), pUserProfileService_(nullptr), pHealthDataService_(nullptr),
       pWeightChar_(nullptr), pHeightChar_(nullptr), pGenderChar_(nullptr), pAgeChar_(nullptr),
       pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr), clientConnected_(false)
 {
-    // Initialize default user profile
-    userProfile_.gender = 1;
-    userProfile_.weight = 65.0;
-    userProfile_.height = 1.77;
-    userProfile_.age = 21;
-    userProfile_.bmr = 0.0; // Will be calculated
+    // Khởi tạo hồ sơ người dùng mặc định
+    userProfile_.gender = 1;    // Nam
+    userProfile_.weight = 65.0; // 65 kg
+    userProfile_.height = 1.77; // 1.77 m
+    userProfile_.age = 21;      // 21 tuổi
+    userProfile_.bmr = 0.0;     // Sẽ được tính toán sau
 }
 
+/**
+ * @brief Khởi tạo BLE Server với hai dịch vụ
+ *
+ * Quy trình:
+ * 1. Khởi tạo thiết bị BLE với tên được chỉ định
+ * 2. Tạo BLE Server
+ * 3. Tạo User Profile Service với 4 Characteristic (cân nặng, chiều cao, giới tính, tuổi)
+ * 4. Tạo Health Data Service với 2 Characteristic (dữ liệu sức khỏe, trạng thái thiết bị)
+ * 5. Bắt đầu quảng cáo BLE để ứng dụng di động có thể khám phá thiết bị
+ *
+ * @param deviceName Tên thiết bị BLE (ví dụ: "Last Dance")
+ * @return true nếu khởi tạo thành công
+ */
 bool BLEServiceManager::begin(const char *deviceName)
 {
     Serial.println("[BLE] Initializing BLE...");
 
-    // Initialize BLE Device
+    // Khởi tạo thiết bị BLE
     BLEDevice::init(deviceName);
 
-    // Create BLE Server
+    // Tạo BLE Server
     pServer_ = BLEDevice::createServer();
     pServer_->setCallbacks(this);
 
-    // === User Profile Service ===
+    // === Tạo User Profile Service ===
     pUserProfileService_ = pServer_->createService(USER_PROFILE_SERVICE_UUID);
 
-    // Weight Characteristic (WRITE)
+    // Characteristic: Cân nặng (WRITE)
     pWeightChar_ = pUserProfileService_->createCharacteristic(
         WEIGHT_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
@@ -36,15 +57,15 @@ bool BLEServiceManager::begin(const char *deviceName)
     uint16_t defaultWeight = (uint16_t)(userProfile_.weight);
     pWeightChar_->setValue(defaultWeight);
 
-    // Height Characteristic (WRITE)
+    // Characteristic: Chiều cao (WRITE)
     pHeightChar_ = pUserProfileService_->createCharacteristic(
         HEIGHT_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
     pHeightChar_->setCallbacks(this);
-    uint16_t defaultHeightCm = (uint16_t)(userProfile_.height * 100);
+    uint16_t defaultHeightCm = (uint16_t)(userProfile_.height * 100); // Lưu tính bằng cm
     pHeightChar_->setValue(defaultHeightCm);
 
-    // Gender Characteristic (WRITE)
+    // Characteristic: Giới tính (WRITE)
     pGenderChar_ = pUserProfileService_->createCharacteristic(
         GENDER_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
@@ -52,7 +73,7 @@ bool BLEServiceManager::begin(const char *deviceName)
     uint8_t defaultGender = (uint8_t)userProfile_.gender;
     pGenderChar_->setValue(&defaultGender, 1);
 
-    // Age Characteristic (WRITE)
+    // Characteristic: Tuổi (WRITE)
     pAgeChar_ = pUserProfileService_->createCharacteristic(
         AGE_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
@@ -62,31 +83,32 @@ bool BLEServiceManager::begin(const char *deviceName)
 
     pUserProfileService_->start();
 
-    // === Health Data Service ===
+    // === Tạo Health Data Service ===
     pHealthDataService_ = pServer_->createService(HEALTH_DATA_SERVICE_UUID);
 
-    // Health Data Batch Characteristic (NOTIFY)
+    // Characteristic: Dữ liệu sức khỏe (NOTIFY)
+    // Ứng dụng di động sẽ nhận thông báo khi dữ liệu thay đổi
     pHealthDataBatchChar_ = pHealthDataService_->createCharacteristic(
         HEALTH_DATA_BATCH_CHAR_UUID,
         BLECharacteristic::PROPERTY_NOTIFY);
     pHealthDataBatchChar_->addDescriptor(new BLE2902());
 
-    // Device Status Characteristic (READ)
+    // Characteristic: Trạng thái thiết bị (READ + NOTIFY)
     pDeviceStatusChar_ = pHealthDataService_->createCharacteristic(
         DEVICE_STATUS_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pDeviceStatusChar_->addDescriptor(new BLE2902());
-    uint8_t statusOnline = 1;
+    uint8_t statusOnline = 1; // 1 = thiết bị hoạt động
     pDeviceStatusChar_->setValue(&statusOnline, 1);
 
     pHealthDataService_->start();
 
-    // Start advertising
+    // === Bắt đầu quảng cáo BLE ===
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(USER_PROFILE_SERVICE_UUID);
     pAdvertising->addServiceUUID(HEALTH_DATA_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
+    pAdvertising->setMinPreferred(0x06); // Cải thiện tương thích với iPhone
     pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
 
@@ -96,17 +118,36 @@ bool BLEServiceManager::begin(const char *deviceName)
     return true;
 }
 
+/**
+ * @brief Callback được gọi khi ứng dụng di động kết nối
+ *
+ * Xử lý:
+ * 1. Cập nhật cờ kết nối
+ * 2. Tăng MTU (Maximum Transmission Unit) lên 512 bytes
+ *    để có thể gửi các dữ liệu JSON dài mà không cần phân chia
+ *
+ * @param pServer Con trỏ BLE Server
+ */
 void BLEServiceManager::onConnect(BLEServer *pServer)
 {
     clientConnected_ = true;
     Serial.println("[BLE] Client connected!");
-    
-    // Set MTU to 512 bytes for better data transfer (default is 23)
-    // This allows sending longer JSON strings without chunking
+
+    // Tăng MTU lên 512 bytes (mặc định là 23)
+    // Điều này cho phép gửi chuỗi JSON dài mà không cần chia nhỏ
     pServer->updatePeerMTU(pServer->getConnId(), 512);
     Serial.println("[BLE] MTU set to 512 bytes");
 }
 
+/**
+ * @brief Callback được gọi khi ứng dụng di động ngắt kết nối
+ *
+ * Xử lý:
+ * 1. Cập nhật cờ kết nối
+ * 2. Bắt đầu quảng cáo lại để ứng dụng khác có thể kết nối
+ *
+ * @param pServer Con trỏ BLE Server
+ */
 void BLEServiceManager::onDisconnect(BLEServer *pServer)
 {
     clientConnected_ = false;
@@ -118,24 +159,28 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 {
     std::string uuid = pCharacteristic->getUUID().toString().c_str();
 
+    // Cập nhật cân nặng
     if (uuid == WEIGHT_CHAR_UUID)
     {
         uint16_t weightKg = *(uint16_t *)pCharacteristic->getData();
         userProfile_.weight = (float)weightKg;
         Serial.printf("[BLE] Weight updated: %.0f kg\n", userProfile_.weight);
     }
+    // Cập nhật chiều cao (đổi từ cm sang m)
     else if (uuid == HEIGHT_CHAR_UUID)
     {
         uint16_t heightCm = *(uint16_t *)pCharacteristic->getData();
         userProfile_.height = (float)heightCm / 100.0;
         Serial.printf("[BLE] Height updated: %.2f m\n", userProfile_.height);
     }
+    // Cập nhật giới tính
     else if (uuid == GENDER_CHAR_UUID)
     {
         uint8_t gender = *(uint8_t *)pCharacteristic->getData();
         userProfile_.gender = (int)gender;
         Serial.printf("[BLE] Gender updated: %d\n", userProfile_.gender);
     }
+    // Cập nhật tuổi
     else if (uuid == AGE_CHAR_UUID)
     {
         uint8_t age = *(uint8_t *)pCharacteristic->getData();
@@ -143,52 +188,91 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
         Serial.printf("[BLE] Age updated: %d\n", userProfile_.age);
     }
 
-    // Recalculate BMR after profile update
-    // Mifflin-St Jeor Equation
-    if (userProfile_.gender == 1) // Male
+    // === Tính toán BMR (Basal Metabolic Rate) bằng công thức Mifflin-St Jeor ===
+    // Công thức:
+    // - Nam: BMR = 10×Weight + 6.25×Height - 5×Age + 5 (kcal/day)
+    // - Nữ: BMR = 10×Weight + 6.25×Height - 5×Age - 161 (kcal/day)
+    if (userProfile_.gender == 1) // Nam
     {
         userProfile_.bmr = 10 * userProfile_.weight + 6.25 * (userProfile_.height * 100) - 5 * userProfile_.age + 5;
     }
-    else // Female
+    else // Nữ
     {
         userProfile_.bmr = 10 * userProfile_.weight + 6.25 * (userProfile_.height * 100) - 5 * userProfile_.age - 161;
     }
     Serial.printf("[BLE] BMR calculated: %.1f kcal/day\n", userProfile_.bmr);
 }
 
+/**
+ * @brief Gửi dữ liệu sức khỏe hiện tại đến ứng dụng di động
+ *
+ * @param hr Nhịp tim (BPM)
+ * @param spo2 Độ bão hòa oxy (%)
+ * @param steps Tổng số bước
+ * @param calories Tổng calo tiêu thụ (kcal)
+ */
 void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps, float calories)
 {
+    // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
     {
         return;
     }
 
+    // Xây dựng dữ liệu JSON
     String jsonData = buildHealthDataJSON(hr, spo2, steps, calories, -1.0);
+
+    // Cập nhật giá trị của Characteristic
     pHealthDataBatchChar_->setValue(jsonData.c_str());
+
+    // Gửi thông báo đến ứng dụng
     pHealthDataBatchChar_->notify();
 
     Serial.printf("[BLE] Notified health data: %s\n", jsonData.c_str());
 }
 
+/**
+ * @brief Gửi dữ liệu sức khỏe kèm cảnh báo (nếu có)
+ *
+ * @param hr Nhịp tim (BPM)
+ * @param spo2 Độ bão hòa oxy (%)
+ * @param steps Tổng số bước
+ * @param calories Tổng calo tiêu thụ (kcal)
+ * @param alertScore Điểm cảnh báo từ mô hình ML (0-1)
+ */
 void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float calories, float alertScore)
 {
+    // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
     {
         return;
     }
 
+    // Xây dựng dữ liệu JSON (bao gồm alertScore)
     String jsonData = buildHealthDataJSON(hr, spo2, steps, calories, alertScore);
+
+    // Cập nhật giá trị của Characteristic
     pHealthDataBatchChar_->setValue(jsonData.c_str());
+
+    // Gửi thông báo đến ứng dụng
     pHealthDataBatchChar_->notify();
 
     Serial.printf("[BLE] Notified health data WITH ALERT: %s\n", jsonData.c_str());
 }
 
+/**
+ * @brief Kiểm tra xem ứng dụng di động có kết nối không
+ * @return true nếu có khách hàng BLE đang kết nối
+ */
 bool BLEServiceManager::isClientConnected() const
 {
     return clientConnected_;
 }
 
+/**
+ * @brief Lấy tham chiếu đến hồ sơ người dùng
+ * @return Tham chiếu UserProfile (có thể sửa đổi)
+ */
 UserProfile &BLEServiceManager::getUserProfile()
 {
     return userProfile_;

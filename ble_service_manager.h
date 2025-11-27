@@ -1,62 +1,121 @@
+/**
+ * @file ble_service_manager.h
+ * @brief Quản lý dịch vụ Bluetooth Low Energy (BLE) để giao tiếp với ứng dụng di động
+ * @author Ho Xuan Thai
+ * @date 2025
+ *
+ * Chức năng:
+ * - Khởi tạo BLE Server với các dịch vụ (Services) và đặc trưng (Characteristics)
+ * - Cung cấp hai dịch vụ chính:
+ *   1. User Profile Service: Nhận cấu hình người dùng từ ứng dụng di động
+ *   2. Health Data Service: Gửi dữ liệu sức khỏe thực thời đến ứng dụng di động
+ * - Xử lý kết nối/ngắt kết nối từ ứng dụng di động
+ * - Cập nhật dữ liệu sức khỏe thông qua BLE Notify
+ */
+
 #pragma once
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include "sensor_manager.h"
+#include "max30102_manager.h"
 
-// BLE Service and Characteristic UUIDs (matching spec)
-// User Profile Service
+// === UUID của User Profile Service ===
+// Dịch vụ này chứa các thông tin cá nhân từ ứng dụng di động
 #define USER_PROFILE_SERVICE_UUID "0000181C-0000-1000-8000-00805F9B34FB"
-#define WEIGHT_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB"
-#define HEIGHT_CHAR_UUID "00002A8E-0000-1000-8000-00805F9B34FB"
-#define GENDER_CHAR_UUID "00002A8C-0000-1000-8000-00805F9B34FB"
-#define AGE_CHAR_UUID "00002A80-0000-1000-8000-00805F9B34FB"
+#define WEIGHT_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB" ///< Cân nặng (kg)
+#define HEIGHT_CHAR_UUID "00002A8E-0000-1000-8000-00805F9B34FB" ///< Chiều cao (m)
+#define GENDER_CHAR_UUID "00002A8C-0000-1000-8000-00805F9B34FB" ///< Giới tính (1=nam, 0=nữ)
+#define AGE_CHAR_UUID "00002A80-0000-1000-8000-00805F9B34FB"    ///< Tuổi (năm)
 
-// Health Data Service (custom)
+// === UUID của Health Data Service ===
+// Dịch vụ này cung cấp dữ liệu sức khỏe theo thời gian thực
 #define HEALTH_DATA_SERVICE_UUID "0000180D-0000-1000-8000-00805F9B34FB"
-#define HEALTH_DATA_BATCH_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB"
-#define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"
+#define HEALTH_DATA_BATCH_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB" ///< Dữ liệu sức khỏe (JSON)
+#define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"     ///< Trạng thái thiết bị
 
+/**
+ * @class BLEServiceManager
+ * @brief Quản lý dịch vụ BLE để giao tiếp với ứng dụng di động
+ *
+ * Hoạt động:
+ * 1. Khởi tạo BLE Server với tên thiết bị
+ * 2. Tạo hai dịch vụ:
+ *    - User Profile Service: Nhận cài đặt từ ứng dụng (cân nặng, chiều cao, tuổi, giới tính)
+ *    - Health Data Service: Gửi dữ liệu sức khỏe thực thời (HR, SpO2, bước, calo)
+ * 3. Bắt đầu quảng cáo BLE để ứng dụng di động có thể kết nối
+ * 4. Xử lý các sự kiện kết nối/ngắt kết nối
+ * 5. Gửi dữ liệu thông qua BLE Notify khi ứng dụng đã kết nối
+ */
 class BLEServiceManager : public BLEServerCallbacks, public BLECharacteristicCallbacks
 {
 public:
+    /// @brief Constructor - khởi tạo các biến thành viên
     BLEServiceManager();
-    // Initialize BLE with device name
+
+    /// @brief Khởi tạo BLE Server với tên thiết bị
+    /// @param deviceName Tên thiết bị BLE (ví dụ: "Last Dance")
+    /// @return true nếu khởi tạo thành công
     bool begin(const char *deviceName);
-    // Update health data batch and notify if connected
+
+    /// @brief Gửi dữ liệu sức khỏe đến ứng dụng di động
+    /// @param hr Nhịp tim (BPM)
+    /// @param spo2 Độ bão hòa oxy (%)
+    /// @param steps Tổng số bước
+    /// @param calories Tổng calo tiêu thụ (kcal)
     void notifyHealthData(float hr, float spo2, uint32_t steps, float calories);
-    // Update health data with alert score
+
+    /// @brief Gửi dữ liệu sức khỏe kèm cảnh báo bất thường
+    /// @param hr Nhịp tim (BPM)
+    /// @param spo2 Độ bão hòa oxy (%)
+    /// @param steps Tổng số bước
+    /// @param calories Tổng calo tiêu thụ (kcal)
+    /// @param alertScore Điểm cảnh báo từ mô hình ML (0-1, -1 = không có cảnh báo)
     void notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float calories, float alertScore);
-    // Check if a client is connected
+
+    /// @brief Kiểm tra xem ứng dụng di động có kết nối không
+    /// @return true nếu có khách hàng BLE đang kết nối
     bool isClientConnected() const;
-    // Get reference to user profile for sensor manager
+
+    /// @brief Lấy tham chiếu đến hồ sơ người dùng (để cập nhật từ ứng dụng)
+    /// @return Tham chiếu UserProfile
     UserProfile &getUserProfile();
 
 private:
-    // BLE Server Callbacks
+    /// @brief Callback được gọi khi ứng dụng kết nối
     void onConnect(BLEServer *pServer) override;
+
+    /// @brief Callback được gọi khi ứng dụng ngắt kết nối
     void onDisconnect(BLEServer *pServer) override;
 
-    // Characteristic Write Callbacks (for User Profile Service)
+    /// @brief Callback được gọi khi ứng dụng ghi dữ liệu vào một Characteristic
+    /// Xử lý cập nhật hồ sơ người dùng từ ứng dụng
     void onWrite(BLECharacteristic *pCharacteristic) override;
 
-    BLEServer *pServer_;
-    BLEService *pUserProfileService_;
-    BLEService *pHealthDataService_;
+    BLEServer *pServer_;              ///< Con trỏ BLE Server
+    BLEService *pUserProfileService_; ///< Dịch vụ User Profile
+    BLEService *pHealthDataService_;  ///< Dịch vụ Health Data
 
-    BLECharacteristic *pWeightChar_;
-    BLECharacteristic *pHeightChar_;
-    BLECharacteristic *pGenderChar_;
-    BLECharacteristic *pAgeChar_;
+    // Các Characteristic của User Profile Service
+    BLECharacteristic *pWeightChar_; ///< Cân nặng
+    BLECharacteristic *pHeightChar_; ///< Chiều cao
+    BLECharacteristic *pGenderChar_; ///< Giới tính
+    BLECharacteristic *pAgeChar_;    ///< Tuổi
 
-    BLECharacteristic *pHealthDataBatchChar_;
-    BLECharacteristic *pDeviceStatusChar_;
+    // Các Characteristic của Health Data Service
+    BLECharacteristic *pHealthDataBatchChar_; ///< Dữ liệu sức khỏe (JSON)
+    BLECharacteristic *pDeviceStatusChar_;    ///< Trạng thái thiết bị
 
-    bool clientConnected_;
-    UserProfile userProfile_;
+    bool clientConnected_;    ///< Cờ: ứng dụng di động có kết nối hay không?
+    UserProfile userProfile_; ///< Hồ sơ người dùng hiện tại
 
-    // Helper to build JSON batch for notify
+    /// @brief Tạo chuỗi JSON chứa dữ liệu sức khỏe để gửi qua BLE
+    /// @param hr Nhịp tim
+    /// @param spo2 Độ bão hòa oxy
+    /// @param steps Tổng số bước
+    /// @param calories Tổng calo
+    /// @param alertScore Điểm cảnh báo (mặc định -1 = không có cảnh báo)
+    /// @return Chuỗi JSON
     String buildHealthDataJSON(float hr, float spo2, uint32_t steps, float calories, float alertScore = -1.0);
 };
