@@ -1,7 +1,7 @@
 /**
  * @file max30102_manager.h
  * @brief Quản lý cảm biến MAX30102 để đọc nhịp tim (HR) và độ bão hòa oxy (SpO2)
- * @author Ho Xuan Thai
+ * @author Hồ Xuân Thái
  * @date 2025
  *
  * Mô-đun này cung cấp:
@@ -15,16 +15,13 @@
 #include <Wire.h>
 #include "MAX30105.h"
 #include "heartRate.h"
-
-// Định nghĩa chân I2C cho cảm biến MAX30102 (trên Wire1)
-#define I2C_SDA_MAX30102 17 ///< Chân SDA cho cảm biến MAX30102
-#define I2C_SCL_MAX30102 18 ///< Chân SCL cho cảm biến MAX30102
+#include "board_config.h"
 
 /**
- * @struct SensorData
+ * @struct Max30102Data
  * @brief Cấu trúc lưu trữ dữ liệu cảm biến (nhịp tim và SpO2)
  */
-struct SensorData
+struct Max30102Data
 {
     float hr;   ///< Nhịp tim tính bằng BPM (Beats Per Minute)
     float spo2; ///< Độ bão hòa oxy tính bằng % (Oxygen Saturation)
@@ -44,7 +41,7 @@ struct UserProfile
 };
 
 /**
- * @class SensorManager
+ * @class Max30102Manager
  * @brief Quản lý cảm biến MAX30102 để đọc dữ liệu nhịp tim và SpO2
  *
  * Chức năng chính:
@@ -53,16 +50,16 @@ struct UserProfile
  * - Tính toán nhịp tim trung bình từ các đợt phát hiện gần đây
  * - Ước tính độ bão hòa oxy dựa trên nhịp tim
  */
-class SensorManager
+class Max30102Manager
 {
 public:
     /// @brief Constructor khởi tạo các biến với giá trị mặc định
-    SensorManager();
+    Max30102Manager();
 
-    /// @brief Khởi tạo cảm biến MAX30102 trên bus I2C được chỉ định
-    /// @param sda Chân SDA của I2C
-    /// @param scl Chân SCL của I2C
-    void begin(int sda, int scl);
+    /// @brief Khởi tạo cảm biến MAX30102 trên Wire có sẵn (cho ESP32-C3)
+    /// @param wire Tham chiếu đến đối tượng TwoWire đã khởi tạo
+    /// @return true nếu khởi tạo thành công, false nếu không tìm thấy cảm biến
+    bool beginOnWire(TwoWire &wire);
 
     /// @brief Đọc dữ liệu từ cảm biến và cập nhật nhịp tim, SpO2
     /// Phải được gọi trong vòng lặp chính để theo dõi liên tục
@@ -73,8 +70,8 @@ public:
     bool hasValidData();
 
     /// @brief Lấy dữ liệu cảm biến hiện tại (HR và SpO2)
-    /// @return Cấu trúc SensorData chứa nhịp tim và SpO2
-    SensorData getCurrentData();
+    /// @return Cấu trúc Max30102Data chứa nhịp tim và SpO2
+    Max30102Data getCurrentData();
 
     /// @brief Lấy tham chiếu đến hồ sơ người dùng
     /// @return Tham chiếu UserProfile hiện tại

@@ -1,7 +1,7 @@
 /**
  * @file mpu6050_manager.h
  * @brief Quản lý cảm biến gia tốc kế MPU6050 để đếm bước chân
- * @author Ho Xuan Thai
+ * @author Hồ Xuân Thái
  * @date 2025
  *
  * Chức năng:

@@ -15,7 +15,7 @@
  * - currentSPO2 = 98.0: giá trị mặc định
  * - sensorStatus = 1: ban đầu là lỗi (chưa khởi tạo)
  */
-SensorManager::SensorManager()
+Max30102Manager::Max30102Manager()
     : rateSpot(0), lastBeat(0), currentHR(0.0), currentSPO2(98.0), sensorStatus(1)
 {
     // Khởi tạo bộ đệm nhịp tim với giá trị 0
@@ -26,41 +26,44 @@ SensorManager::SensorManager()
 }
 
 /**
- * @brief Khởi tạo cảm biến MAX30102 trên bus I2C được chỉ định
+ * @brief Khởi tạo cảm biến MAX30102 trên bus I2C đã có sẵn (Wire)
+ * @param wire Tham chiếu đến đối tượng TwoWire đã khởi tạo
+ * @return true nếu khởi tạo thành công, false nếu không tìm thấy cảm biến
  *
- * Quá trình khởi tạo:
- * 1. Bắt đầu Wire1 với chân SDA, SCL được chỉ định
- * 2. Kiểm tra xem cảm biến có phản hồi không
- * 3. Cấu hình các tham số cảm biến (LED IR, độ nhạy)
- * 4. Đợi cảm biến sẵn sàng
- *
- * @param sda Chân SDA của I2C
- * @param scl Chân SCL của I2C
+ * Lưu ý: ESP32-C3 chỉ có 1 bus I2C phần cứng, do đó sử dụng chung Wire.
  */
-void SensorManager::begin(int sda, int scl)
+bool Max30102Manager::beginOnWire(TwoWire &wire)
 {
-    // Khởi tạo bus I2C riêng cho cảm biến MAX30102 (Wire1)
-    Wire1.begin(sda, scl);
-    delay(100);
-
-    // Kiểm tra xem cảm biến có thể truy cập được không
-    if (!particleSensor.begin(Wire1, I2C_SPEED_FAST))
+    // Không cần khởi tạo Wire1 riêng - dùng Wire đã có sẵn
+    if (!particleSensor.begin(wire, I2C_SPEED_FAST))
     {
-        Serial.println("MAX30102 not found!");
-        while (1)
-            ; // Dừng nếu không tìm thấy cảm biến
+        Serial.println("[MAX30102] ERROR: Sensor not found!");
+        sensorStatus = 1;
+        return false; // Không treo thiết bị, trả về false
     }
 
-    Serial.println("MAX30102 initialized.");
+    Serial.println("[MAX30102] Initialized on shared Wire bus.");
 
-    // Cấu hình cảm biến với các tham số cơ bản
-    particleSensor.setup();
-    particleSensor.setPulseAmplitudeRed(0x0A); // Cường độ LED đỏ (không dùng)
-    particleSensor.setPulseAmplitudeGreen(0);  // Không dùng
-    particleSensor.setPulseAmplitudeIR(0x33);  // Cường độ LED hồng ngoại (để đo)
+    // Cấu hình cảm biến cho chế độ đọc NHANH
+    // ledBrightness: 0x3F (tăng lên để bù pulse width ngắn)
+    // sampleAverage: 1 (không average - đọc nhanh nhất)
+    // ledMode: 2 (Red+IR)
+    // sampleRate: 400 (400 samples/sec - nhanh hơn)
+    // pulseWidth: 118 (ngắn hơn để sample rate cao hơn)
+    // adcRange: 4096
+    particleSensor.setup(0x3F, 1, 2, 400, 118, 4096);
 
-    delay(500);
-    Serial.println("MAX30102 ready. Place your finger on sensor.");
+    // Tăng độ sáng LED để có tín hiệu mạnh hơn
+    particleSensor.setPulseAmplitudeRed(0x3F); // Tăng gấp đôi (63)
+    particleSensor.setPulseAmplitudeGreen(0);  // Tắt LED xanh
+    particleSensor.setPulseAmplitudeIR(0x3F);  // Tăng gấp đôi (63)
+
+    // Xóa FIFO để bắt đầu sạch
+    particleSensor.clearFIFO();
+
+    delay(50); // Giảm delay
+    Serial.println("[MAX30102] Ready (Fast mode: 400Hz, no averaging).");
+    return true;
 }
 
 /**
@@ -75,85 +78,98 @@ void SensorManager::begin(int sda, int scl)
  *
  * Ghi chú: Công thức SpO2 là ước tính đơn giản, không phải đo chính xác
  */
-void SensorManager::readSensorData()
+void Max30102Manager::readSensorData()
 {
-    long irValue = particleSensor.getIR();
+    // Kiểm tra và đọc tất cả samples có sẵn trong FIFO
+    particleSensor.check();
 
-    // Debug thông tin mỗi 2 giây
-    static unsigned long lastDebugTime = 0;
-    static int beatDetectCount = 0;
-    static int totalReadings = 0;
+    // Debug: Đếm số samples có sẵn
+    static unsigned long lastDebugMs = 0;
+    static uint32_t sampleCount = 0;
+    static uint32_t lowIrCount = 0;
+    static uint32_t processedCount = 0;
 
-    totalReadings++;
-
-    // In ra thống kê mỗi 2 giây
-    if (millis() - lastDebugTime > 2000)
+    // Đọc tất cả samples có sẵn (không chờ)
+    while (particleSensor.available())
     {
-        Serial.printf("[Sensor] IR=%ld, Beat detects in last 2s: %d, Total reads: %d\n",
-                      irValue, beatDetectCount, totalReadings);
-        beatDetectCount = 0;
-        totalReadings = 0;
-        lastDebugTime = millis();
-    }
+        long irValue = particleSensor.getIR();
+        long redValue = particleSensor.getRed();
+        particleSensor.nextSample();
+        sampleCount++;
 
-    // Kiểm tra xem ngón tay có trên cảm biến không
-    // Nếu IR quá thấp, có thể ngón tay chưa được đặt lên cảm biến
-    if (irValue < 50000)
-    {
-        sensorStatus = 1; // Lỗi: IR quá thấp
-        Serial.println("[Sensor] WARNING: IR value too low (finger not on sensor?)");
-        return;
-    }
-
-    // Phát hiện nhịp tim từ tín hiệu IR
-    if (checkForBeat(irValue) == true)
-    {
-        beatDetectCount++;
-        Serial.println("[Sensor] BEAT DETECTED!");
-
-        // Tính toán khoảng thời gian giữa hai nhịp tim
-        long delta = millis() - lastBeat;
-        lastBeat = millis();
-
-        // Chuyển đổi khoảng thời gian thành BPM (Beats Per Minute)
-        float beatsPerMinute = 60.0 / (delta / 1000.0);
-        Serial.printf("[Sensor] BPM calculated: %.1f\n", beatsPerMinute);
-
-        // Kiểm tra xem BPM có hợp lệ không (20-255 BPM)
-        if (beatsPerMinute < 255 && beatsPerMinute > 20)
+        // Giảm ngưỡng IR xuống 30000 (với pulse width ngắn hơn, tín hiệu yếu hơn)
+        if (irValue < 30000)
         {
-            // Thêm vào bộ đệm nhịp tim (lưu 4 lần gần đây)
-            rates[rateSpot++] = (byte)beatsPerMinute;
-            rateSpot %= RATE_SIZE; // Quay vòng: 0,1,2,3,0,1,2,3...
+            sensorStatus = 1;
+            lowIrCount++;
+            continue; // Bỏ qua sample này, đọc tiếp
+        }
 
-            // Tính trung bình cộng của 4 giá trị BPM gần đây
-            int beatAvg = 0;
-            for (byte x = 0; x < RATE_SIZE; x++)
+        processedCount++;
+
+        // Phát hiện nhịp tim từ tín hiệu IR
+        if (checkForBeat(irValue) == true)
+        {
+            Serial.printf("[HR] BEAT! IR=%ld, Red=%ld\n", irValue, redValue);
+
+            // Tính toán khoảng thời gian giữa hai nhịp tim
+            long delta = millis() - lastBeat;
+            lastBeat = millis();
+
+            // Chuyển đổi khoảng thời gian thành BPM
+            float beatsPerMinute = 60.0 / (delta / 1000.0);
+            Serial.printf("[HR] Delta=%ldms, BPM=%.1f\n", delta, beatsPerMinute);
+
+            // Kiểm tra BPM hợp lệ (20-255 BPM)
+            if (beatsPerMinute < 255 && beatsPerMinute > 20)
             {
-                beatAvg += rates[x];
+                rates[rateSpot++] = (byte)beatsPerMinute;
+                rateSpot %= RATE_SIZE;
+
+                // Tính trung bình
+                int beatAvg = 0;
+                for (byte x = 0; x < RATE_SIZE; x++)
+                {
+                    beatAvg += rates[x];
+                }
+                beatAvg /= RATE_SIZE;
+
+                currentHR = (float)beatAvg;
+
+                // Tính SpO2 từ tỉ lệ Red/IR (đơn giản hóa)
+                if (redValue > 0 && irValue > 0)
+                {
+                    float ratio = (float)redValue / (float)irValue;
+                    // SpO2 ước tính: 110 - 25 * ratio (công thức đơn giản)
+                    currentSPO2 = 110.0 - 25.0 * ratio;
+                    if (currentSPO2 > 100)
+                        currentSPO2 = 100;
+                    if (currentSPO2 < 80)
+                        currentSPO2 = 80;
+                }
+
+                sensorStatus = 0;
+                Serial.printf("[HR] *** VALID: HR=%d, SpO2=%.0f%%, Ratio=%.2f ***\n",
+                              beatAvg, currentSPO2, (float)redValue / (float)irValue);
             }
-            beatAvg /= RATE_SIZE;
-
-            currentHR = (float)beatAvg;
-
-            // Ước tính SpO2 dựa trên nhịp tim (công thức đơn giản)
-            // Công thức: SpO2 = 95 + (100 - BPM) / 10
-            currentSPO2 = 95.0 + (100.0 - beatAvg) / 10.0;
-
-            // Giới hạn SpO2 trong phạm vi 80-100%
-            if (currentSPO2 > 100)
-                currentSPO2 = 100;
-            if (currentSPO2 < 80)
-                currentSPO2 = 80;
-
-            sensorStatus = 0; // Dữ liệu hợp lệ
-            Serial.printf("[Sensor] HR=%.0f, SPO2=%.0f, IR=%ld\n", currentHR, currentSPO2, irValue);
+            else
+            {
+                Serial.printf("[HR] BPM out of range: %.1f\n", beatsPerMinute);
+            }
         }
-        else
-        {
-            // BPM ngoài phạm vi hợp lệ
-            Serial.printf("[Sensor] BPM out of range: %.1f\n", beatsPerMinute);
-        }
+    }
+
+    // In debug mỗi 2 giây
+    if (millis() - lastDebugMs > 2000)
+    {
+        Serial.printf("[HR-DBG] Total: %d, Processed: %d, LowIR: %d, Status: %s, HR=%.0f\n",
+                      sampleCount, processedCount, lowIrCount,
+                      sensorStatus == 0 ? "OK" : "NO_FINGER",
+                      currentHR);
+        sampleCount = 0;
+        processedCount = 0;
+        lowIrCount = 0;
+        lastDebugMs = millis();
     }
 }
 
@@ -161,18 +177,18 @@ void SensorManager::readSensorData()
  * @brief Kiểm tra xem dữ liệu cảm biến hiện tại có hợp lệ không
  * @return true nếu sensorStatus == 0 (dữ liệu hợp lệ), false nếu sensorStatus == 1
  */
-bool SensorManager::hasValidData()
+bool Max30102Manager::hasValidData()
 {
     return (sensorStatus == 0);
 }
 
 /**
  * @brief Lấy dữ liệu cảm biến hiện tại
- * @return Cấu trúc SensorData chứa nhịp tim (HR) và độ bão hòa oxy (SpO2)
+ * @return Cấu trúc Max30102Data chứa nhịp tim (HR) và độ bão hòa oxy (SpO2)
  */
-SensorData SensorManager::getCurrentData()
+Max30102Data Max30102Manager::getCurrentData()
 {
-    SensorData data;
+    Max30102Data data;
     data.hr = currentHR;
     data.spo2 = currentSPO2;
     return data;
@@ -182,7 +198,7 @@ SensorData SensorManager::getCurrentData()
  * @brief Lấy tham chiếu đến hồ sơ người dùng
  * @return Tham chiếu UserProfile hiện tại (để có thể sửa đổi)
  */
-UserProfile &SensorManager::getUserProfile()
+UserProfile &Max30102Manager::getUserProfile()
 {
     return currentUser;
 }

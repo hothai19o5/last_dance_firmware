@@ -11,9 +11,10 @@
  */
 BLEServiceManager::BLEServiceManager()
     : pServer_(nullptr), pUserProfileService_(nullptr), pHealthDataService_(nullptr),
-      pWeightChar_(nullptr), pHeightChar_(nullptr), pGenderChar_(nullptr), pAgeChar_(nullptr),
-      pStepCountEnabledChar_(nullptr), pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr),
-      clientConnected_(false), stepCountEnabled_(true)
+      pBatteryService_(nullptr), pWeightChar_(nullptr), pHeightChar_(nullptr),
+      pGenderChar_(nullptr), pAgeChar_(nullptr), pStepCountEnabledChar_(nullptr),
+      pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr), pBatteryLevelChar_(nullptr),
+      clientConnected_(false), stepCountEnabled_(true), lastActivityMs_(0)
 {
     // Khởi tạo hồ sơ người dùng mặc định
     userProfile_.gender = 1;    // Nam
@@ -112,10 +113,23 @@ bool BLEServiceManager::begin(const char *deviceName)
 
     pHealthDataService_->start();
 
-    // === Bắt đầu quảng cáo BLE ===
+    // === Battery Service ===
+    pBatteryService_ = pServer_->createService(BATTERY_SERVICE_UUID);
+
+    pBatteryLevelChar_ = pBatteryService_->createCharacteristic(
+        BATTERY_LEVEL_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    pBatteryLevelChar_->addDescriptor(new BLE2902());
+    uint8_t defaultBattery = 100;
+    pBatteryLevelChar_->setValue(&defaultBattery, 1);
+
+    pBatteryService_->start();
+
+    // === Start Advertising BLE ===
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(USER_PROFILE_SERVICE_UUID);
     pAdvertising->addServiceUUID(HEALTH_DATA_SERVICE_UUID);
+    pAdvertising->addServiceUUID(BATTERY_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
     pAdvertising->setMinPreferred(0x06); // Cải thiện tương thích với iPhone
     pAdvertising->setMinPreferred(0x12);
@@ -166,6 +180,8 @@ void BLEServiceManager::onDisconnect(BLEServer *pServer)
 
 void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 {
+    lastActivityMs_ = millis(); // Cập nhật thời điểm hoạt động cuối cùng
+
     std::string uuid = pCharacteristic->getUUID().toString().c_str();
 
     // Cập nhật cân nặng
@@ -226,9 +242,8 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
  * @param hr Nhịp tim (BPM)
  * @param spo2 Độ bão hòa oxy (%)
  * @param steps Tổng số bước
- * @param calories Tổng calo tiêu thụ (kcal)
  */
-void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps, float calories)
+void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps)
 {
     // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
@@ -237,7 +252,7 @@ void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps, f
     }
 
     // Xây dựng dữ liệu JSON
-    String jsonData = buildHealthDataJSON(hr, spo2, steps, calories, -1.0);
+    String jsonData = buildHealthDataJSON(hr, spo2, steps, -1.0);
 
     // Cập nhật giá trị của Characteristic
     pHealthDataBatchChar_->setValue(jsonData.c_str());
@@ -254,10 +269,9 @@ void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps, f
  * @param hr Nhịp tim (BPM)
  * @param spo2 Độ bão hòa oxy (%)
  * @param steps Tổng số bước
- * @param calories Tổng calo tiêu thụ (kcal)
  * @param alertScore Điểm cảnh báo từ mô hình ML (0-1)
  */
-void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float calories, float alertScore)
+void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float alertScore)
 {
     // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
@@ -266,7 +280,7 @@ void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t
     }
 
     // Xây dựng dữ liệu JSON (bao gồm alertScore)
-    String jsonData = buildHealthDataJSON(hr, spo2, steps, calories, alertScore);
+    String jsonData = buildHealthDataJSON(hr, spo2, steps, alertScore);
 
     // Cập nhật giá trị của Characteristic
     pHealthDataBatchChar_->setValue(jsonData.c_str());
@@ -275,6 +289,45 @@ void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t
     pHealthDataBatchChar_->notify();
 
     Serial.printf("[BLE] Notified health data WITH ALERT: %s\n", jsonData.c_str());
+}
+
+/**
+ * @brief Gửi batch dữ liệu HR/SpO2 qua BLE
+ *
+ * Do giới hạn MTU, dữ liệu lớn sẽ được chia thành nhiều packet
+ */
+bool BLEServiceManager::notifyHealthDataBatch(const char *jsonData, size_t len)
+{
+    if (!clientConnected_)
+    {
+        Serial.println("[BLE] Cannot send batch - not connected");
+        return false;
+    }
+
+    // Gửi toàn bộ dữ liệu (MTU đã được set 512)
+    // Nếu dữ liệu lớn hơn, BLE stack sẽ tự động chia
+    pHealthDataBatchChar_->setValue((uint8_t *)jsonData, len);
+    pHealthDataBatchChar_->notify();
+
+    lastActivityMs_ = millis();
+    Serial.printf("[BLE] Sent batch data: %d bytes\n", len);
+
+    return true;
+}
+
+/**
+ * @brief Cập nhật và gửi mức pin
+ */
+void BLEServiceManager::notifyBatteryLevel(uint8_t batteryPercent)
+{
+    pBatteryLevelChar_->setValue(&batteryPercent, 1);
+
+    if (clientConnected_)
+    {
+        pBatteryLevelChar_->notify();
+        lastActivityMs_ = millis();
+        Serial.printf("[BLE] Battery level notified: %d%%\n", batteryPercent);
+    }
 }
 
 /**
@@ -304,7 +357,7 @@ bool BLEServiceManager::isStepCountEnabled() const
     return stepCountEnabled_;
 }
 
-String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t steps, float calories, float alertScore)
+String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t steps, float alertScore)
 {
     // Build compact JSON batch for BLE notify
     // Format: {"hr":75,"spo2":98,"steps":1500,"cal":120.5,"ts":1698765432,"alert":0.85}
@@ -312,8 +365,7 @@ String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t ste
     doc["hr"] = (int)hr;
     doc["spo2"] = (int)spo2;
     doc["steps"] = steps;
-    doc["cal"] = round(calories * 10) / 10.0; // 1 decimal
-    doc["ts"] = millis() / 1000;              // timestamp in seconds since boot
+    doc["ts"] = millis() / 1000; // timestamp in seconds since boot
 
     // Include alert score if provided (> 0)
     if (alertScore >= 0.0)

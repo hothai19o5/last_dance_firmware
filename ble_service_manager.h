@@ -1,7 +1,7 @@
 /**
  * @file ble_service_manager.h
  * @brief Quản lý dịch vụ Bluetooth Low Energy (BLE) để giao tiếp với ứng dụng di động
- * @author Ho Xuan Thai
+ * @author Hồ Xuân Thái
  * @date 2025
  *
  * Chức năng:
@@ -36,6 +36,10 @@
 #define HEALTH_DATA_BATCH_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB" ///< Dữ liệu sức khỏe (JSON)
 #define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"     ///< Trạng thái thiết bị
 
+// === UUID cho Battery Service ===
+#define BATTERY_SERVICE_UUID "0000180F-0000-1000-8000-00805F9B34FB"
+#define BATTERY_LEVEL_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"
+
 /**
  * @class BLEServiceManager
  * @brief Quản lý dịch vụ BLE để giao tiếp với ứng dụng di động
@@ -64,16 +68,23 @@ public:
     /// @param hr Nhịp tim (BPM)
     /// @param spo2 Độ bão hòa oxy (%)
     /// @param steps Tổng số bước
-    /// @param calories Tổng calo tiêu thụ (kcal)
-    void notifyHealthData(float hr, float spo2, uint32_t steps, float calories);
+    void notifyHealthData(float hr, float spo2, uint32_t steps);
 
     /// @brief Gửi dữ liệu sức khỏe kèm cảnh báo bất thường
     /// @param hr Nhịp tim (BPM)
     /// @param spo2 Độ bão hòa oxy (%)
     /// @param steps Tổng số bước
-    /// @param calories Tổng calo tiêu thụ (kcal)
     /// @param alertScore Điểm cảnh báo từ mô hình ML (0-1, -1 = không có cảnh báo)
-    void notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float calories, float alertScore);
+    void notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float alertScore);
+
+    /// @brief Gửi batch dữ liệu HR/SpO2
+    /// @param jsonData Chuỗi JSON chứa dữ liệu batch
+    /// @return true nếu gửi thành công
+    bool notifyHealthDataBatch(const char *jsonData, size_t len);
+
+    /// @brief Cập nhật và gửi mức pin
+    /// @param batteryPercent Phần trăm pin (0-100)
+    void notifyBatteryLevel(uint8_t batteryPercent);
 
     /// @brief Kiểm tra xem ứng dụng di động có kết nối không
     /// @return true nếu có khách hàng BLE đang kết nối
@@ -98,9 +109,10 @@ private:
     /// Xử lý cập nhật hồ sơ người dùng từ ứng dụng
     void onWrite(BLECharacteristic *pCharacteristic) override;
 
-    BLEServer *pServer_;              ///< Con trỏ BLE Server
-    BLEService *pUserProfileService_; ///< Dịch vụ User Profile
-    BLEService *pHealthDataService_;  ///< Dịch vụ Health Data
+    BLEServer *pServer_; ///< Con trỏ BLE Server
+    BLEService *pUserProfileService_;
+    BLEService *pHealthDataService_;
+    BLEService *pBatteryService_;
 
     // Các Characteristic của User Profile Service
     BLECharacteristic *pWeightChar_;           ///< Cân nặng
@@ -112,17 +124,18 @@ private:
     // Các Characteristic của Health Data Service
     BLECharacteristic *pHealthDataBatchChar_; ///< Dữ liệu sức khỏe (JSON)
     BLECharacteristic *pDeviceStatusChar_;    ///< Trạng thái thiết bị
+    BLECharacteristic *pBatteryLevelChar_;
 
     bool clientConnected_;    ///< Cờ: ứng dụng di động có kết nối hay không?
     bool stepCountEnabled_;   ///< Cờ: bật/tắt đếm bước chân (default = true)
     UserProfile userProfile_; ///< Hồ sơ người dùng hiện tại
+    unsigned long lastActivityMs_;
 
     /// @brief Tạo chuỗi JSON chứa dữ liệu sức khỏe để gửi qua BLE
     /// @param hr Nhịp tim
     /// @param spo2 Độ bão hòa oxy
     /// @param steps Tổng số bước
-    /// @param calories Tổng calo
     /// @param alertScore Điểm cảnh báo (mặc định -1 = không có cảnh báo)
     /// @return Chuỗi JSON
-    String buildHealthDataJSON(float hr, float spo2, uint32_t steps, float calories, float alertScore = -1.0);
+    String buildHealthDataJSON(float hr, float spo2, uint32_t steps, float alertScore = -1.0);
 };

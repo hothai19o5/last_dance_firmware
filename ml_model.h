@@ -1,7 +1,7 @@
 /**
  * @file ml_model.h
  * @brief Quản lý mô hình máy học TensorFlow Lite Micro để phát hiện bất thường sức khỏe
- * @author Ho Xuan Thai
+ * @author Hồ Xuân Thái
  * @date 2025
  *
  * Mô hình này sử dụng TensorFlow Lite Micro để:
