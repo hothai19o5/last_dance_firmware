@@ -104,13 +104,14 @@ uint16_t DataBuffer::getCount() const
  *   "count": 300,
  *   "start_ts": 12345,
  *   "interval": 1,
+ *   "steps": 1500,
  *   "hr": [75, 76, 74, ...],
  *   "spo2": [98, 97, 98, ...]
  * }
  *
  * Lưu ý: Do giới hạn BLE MTU, có thể cần chia thành nhiều packet
  */
-size_t DataBuffer::getCompressedData(char *output, size_t maxLen)
+size_t DataBuffer::getCompressedData(char *output, size_t maxLen, uint32_t steps)
 {
     // Tạo JSON document
     // Với 300 samples, cần khoảng 300*2*4 = 2400 bytes cho arrays
@@ -119,7 +120,8 @@ size_t DataBuffer::getCompressedData(char *output, size_t maxLen)
     doc["type"] = "batch";
     doc["count"] = count_;
     doc["start_ts"] = buffer_[0].timestamp;
-    doc["interval"] = 1; // 1 giây/sample
+    doc["interval"] = 1;  // 1 giây/sample
+    doc["steps"] = steps; // Thêm số bước chân
 
     // Tạo arrays cho HR và SpO2
     JsonArray hrArray = doc.createNestedArray("hr");

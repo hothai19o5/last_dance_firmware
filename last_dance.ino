@@ -94,9 +94,10 @@ void sendBatchData()
     return;
   }
 
-  // Chuẩn bị buffer để gửi
+  // Chuẩn bị buffer để gửi (bao gồm steps hiện tại)
+  uint32_t currentSteps = mpuManager.getStepCount();
   char jsonBuffer[4096];
-  size_t len = dataBuffer.getCompressedData(jsonBuffer, sizeof(jsonBuffer));
+  size_t len = dataBuffer.getCompressedData(jsonBuffer, sizeof(jsonBuffer), currentSteps);
 
   if (len > 0)
   {

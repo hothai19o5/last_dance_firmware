@@ -56,8 +56,9 @@ public:
     /// @brief Lấy dữ liệu đã nén để gửi qua BLE
     /// @param output Buffer đầu ra (tối thiểu 512 bytes)
     /// @param maxLen Kích thước tối đa của buffer đầu ra
+    /// @param steps Số bước chân hiện tại
     /// @return Số bytes đã ghi vào output
-    size_t getCompressedData(char *output, size_t maxLen);
+    size_t getCompressedData(char *output, size_t maxLen, uint32_t steps);
 
     /// @brief Xóa buffer sau khi đã gửi
     void clear();
