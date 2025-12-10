@@ -298,21 +298,34 @@ void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t
  */
 bool BLEServiceManager::notifyHealthDataBatch(const char *jsonData, size_t len)
 {
+    // Tạm thời disable batch data theo yêu cầu
+    Serial.println("[BLE] Batch data sending is disabled");
+    return false;
+
+    /*
     if (!clientConnected_)
     {
         Serial.println("[BLE] Cannot send batch - not connected");
         return false;
     }
 
-    // Gửi toàn bộ dữ liệu (MTU đã được set 512)
-    // Nếu dữ liệu lớn hơn, BLE stack sẽ tự động chia
+    // Log toàn bộ JSON
+    Serial.printf("[BLE] Preparing to send batch data: %d bytes\n", len);
+    Serial.println("[BLE] Full JSON to send:");
+    Serial.println(jsonData);
+    Serial.println("[BLE] =================");
+
+    // Gửi toàn bộ dữ liệu một lần bằng uint8_t array
+    // setValue với uint8_t* và length sẽ gửi toàn bộ data
     pHealthDataBatchChar_->setValue((uint8_t *)jsonData, len);
     pHealthDataBatchChar_->notify();
 
     lastActivityMs_ = millis();
-    Serial.printf("[BLE] Sent batch data: %d bytes\n", len);
+    Serial.printf("[BLE] ✅ Sent batch data: %d bytes\n", len);
+    Serial.println("[BLE] Notify completed");
 
     return true;
+    */
 }
 
 /**

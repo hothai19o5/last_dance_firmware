@@ -65,22 +65,27 @@ bool DataBuffer::isFull() const
  * @brief Kiểm tra xem có nên gửi dữ liệu không
  *
  * Điều kiện gửi:
- * 1. Buffer đầy (300 samples = 5 phút)
- * 2. Hoặc đã quá 5 phút kể từ mẫu đầu tiên
- * 3. Và có ít nhất 1 mẫu trong buffer
+ * 1. Buffer đầy (HR_BUFFER_SIZE samples)
+ * 2. Hoặc đã quá DATA_SEND_INTERVAL_MS (mặc định 1 phút) kể từ mẫu đầu tiên
+ * 3. Và có ít nhất MIN_SAMPLES_TO_SEND mẫu trong buffer
  */
 bool DataBuffer::shouldSend() const
 {
-    if (count_ == 0)
+    // Cần ít nhất 10 samples để gửi (tránh gửi dữ liệu quá ít)
+    const uint16_t MIN_SAMPLES_TO_SEND = 10;
+
+    if (count_ < MIN_SAMPLES_TO_SEND)
         return false;
 
     // Buffer đầy
     if (isFull())
         return true;
 
-    // Đã quá 5 phút kể từ mẫu đầu tiên
-    if (millis() - firstSampleMs_ >= 1000)
+    // Đã quá DATA_SEND_INTERVAL_MS kể từ mẫu đầu tiên
+    if (millis() - firstSampleMs_ >= DATA_SEND_INTERVAL_MS)
     {
+        Serial.printf("[Buffer] Time to send: %d samples after %lu ms\n",
+                      count_, millis() - firstSampleMs_);
         return true;
     }
 

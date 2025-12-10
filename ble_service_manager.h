@@ -34,7 +34,7 @@
 // Dịch vụ này cung cấp dữ liệu sức khỏe theo thời gian thực
 #define HEALTH_DATA_SERVICE_UUID "0000180D-0000-1000-8000-00805F9B34FB"
 #define HEALTH_DATA_BATCH_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB" ///< Dữ liệu sức khỏe (JSON)
-#define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"     ///< Trạng thái thiết bị
+#define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8001-00805F9B34FB"     ///< Trạng thái thiết bị
 
 // === UUID cho Battery Service ===
 #define BATTERY_SERVICE_UUID "0000180F-0000-1000-8000-00805F9B34FB"

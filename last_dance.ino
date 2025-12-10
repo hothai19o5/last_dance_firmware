@@ -34,6 +34,7 @@ static unsigned long lastHrReadMs = 0;
 static unsigned long lastBatteryReadMs = 0;
 static bool mlInitialized = false;
 static bool max30102Ready = false; // Cờ kiểm tra MAX30102 đã khởi tạo chưa
+static bool isSending = false;     // Cờ đang gửi dữ liệu - tránh gửi lặp
 
 // === Battery update interval ===
 #define BATTERY_UPDATE_INTERVAL_MS 60000 // Cập nhật pin mỗi 1 phút
@@ -68,7 +69,7 @@ void processML(float hr, float spo2)
   float bmi = profile.weight / (profile.height * profile.height);
   float score = mlModel.runInference(hr, spo2, bmi);
 
-  if (score > 0.95)
+  if (score > 1)
   {
     Serial.printf("[ML] ALERT: Score=%.4f\n", score);
 
@@ -85,6 +86,13 @@ void processML(float hr, float spo2)
  */
 void sendBatchData()
 {
+  // Kiểm tra cờ đang gửi - tránh gửi lặp
+  if (isSending)
+  {
+    Serial.println("[Main] Already sending data, skipping...");
+    return;
+  }
+
   if (!dataBuffer.shouldSend())
     return;
 
@@ -94,6 +102,12 @@ void sendBatchData()
     return;
   }
 
+  // Đặt cờ đang gửi
+  isSending = true;
+
+  Serial.println("[Main] ========== SENDING BATCH DATA ==========");
+  Serial.printf("[Main] Buffer has %d samples ready to send\n", dataBuffer.getCount());
+
   // Chuẩn bị buffer để gửi (bao gồm steps hiện tại)
   uint32_t currentSteps = mpuManager.getStepCount();
   char jsonBuffer[4096];
@@ -101,16 +115,23 @@ void sendBatchData()
 
   if (len > 0)
   {
+    Serial.printf("[Main] JSON generated: %d bytes\n", len);
     if (bleManager.notifyHealthDataBatch(jsonBuffer, len))
     {
-      Serial.println("[Main] Batch data sent successfully");
+      Serial.println("[Main] ✅ Batch data sent successfully");
       dataBuffer.clear();
+      Serial.println("[Main] ✅ Buffer cleared");
     }
     else
     {
-      Serial.println("[Main] Failed to send batch data");
+      Serial.println("[Main] ❌ Failed to send batch data");
     }
   }
+
+  Serial.println("[Main] ==========================================");
+
+  // Xóa cờ đang gửi
+  isSending = false;
 }
 
 /**
@@ -135,10 +156,19 @@ void readAndBufferHR()
     Max30102Data data = max30102Manager.getCurrentData();
 
     // Thêm vào buffer
-    bool bufferFull = dataBuffer.addSample(data.hr, data.spo2);
+    // bool bufferFull = dataBuffer.addSample(data.hr, data.spo2);
+    // Tạm thời disable buffer để gửi realtime
+    bool bufferFull = false;
 
     // Chạy ML với dữ liệu mới nhất (đồng bộ với việc đọc HR)
     processML(data.hr, data.spo2);
+
+    // Gửi dữ liệu realtime qua BLE
+    if (bleManager.isClientConnected())
+    {
+      uint32_t steps = mpuManager.getStepCount();
+      bleManager.notifyHealthData(data.hr, data.spo2, steps);
+    }
 
     if (bufferFull)
     {
@@ -217,7 +247,8 @@ void loop()
   }
 
   // 3. Gửi batch data khi đủ điều kiện
-  sendBatchData();
+  // Tạm thời disable batch data để gửi realtime
+  // sendBatchData();
 
   // 4. Cập nhật mức pin
   updateBattery();
