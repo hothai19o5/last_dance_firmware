@@ -7,6 +7,7 @@
 
 #include "data_buffer.h"
 #include <ArduinoJson.h>
+#include <time.h>
 
 /**
  * @brief Constructor - khởi tạo buffer rỗng
@@ -22,9 +23,10 @@ DataBuffer::DataBuffer()
  *
  * @param hr Nhịp tim (BPM) - sẽ được làm tròn và giới hạn 0-255
  * @param spo2 Độ bão hòa oxy (%) - sẽ được làm tròn và giới hạn 0-100
+ * @param steps Số bước chân hiện tại
  * @return true nếu buffer đầy sau khi thêm
  */
-bool DataBuffer::addSample(float hr, float spo2)
+bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
 {
     // Ghi nhận thời điểm mẫu đầu tiên
     if (count_ == 0)
@@ -36,7 +38,12 @@ bool DataBuffer::addSample(float hr, float spo2)
     HealthSample sample;
     sample.hr = (uint8_t)constrain(hr, 0, 255);
     sample.spo2 = (uint8_t)constrain(spo2, 0, 100);
-    sample.timestamp = millis() / 1000; // Timestamp tính bằng giây
+    sample.steps = steps;
+    
+    // Sử dụng Unix timestamp thực tế
+    time_t now;
+    time(&now);
+    sample.timestamp = (uint32_t)now;
 
     // Thêm vào buffer
     buffer_[head_] = sample;
@@ -47,8 +54,8 @@ bool DataBuffer::addSample(float hr, float spo2)
         count_++;
     }
 
-    Serial.printf("[Buffer] Added sample: HR=%d, SpO2=%d, Count=%d/%d\n",
-                  sample.hr, sample.spo2, count_, HR_BUFFER_SIZE);
+    Serial.printf("[Buffer] Added sample: HR=%d, SpO2=%d, Steps=%u, Count=%d/%d\n",
+                  sample.hr, sample.spo2, sample.steps, count_, HR_BUFFER_SIZE);
 
     return isFull();
 }
@@ -101,50 +108,41 @@ uint16_t DataBuffer::getCount() const
 }
 
 /**
- * @brief Lấy dữ liệu đã nén dạng JSON để gửi qua BLE
+ * @brief Lấy dữ liệu dạng mảng JSON các object realtime
  *
  * Format JSON:
- * {
- *   "type": "batch",
- *   "count": 300,
- *   "start_ts": 12345,
- *   "interval": 1,
- *   "steps": 1500,
- *   "hr": [75, 76, 74, ...],
- *   "spo2": [98, 97, 98, ...]
- * }
- *
- * Lưu ý: Do giới hạn BLE MTU, có thể cần chia thành nhiều packet
+ * [
+ *   {"hr": 75, "spo2": 98, "steps": 1500, "ts": 1700000001},
+ *   {"hr": 76, "spo2": 97, "steps": 1500, "ts": 1700000002},
+ *   ...
+ * ]
  */
-size_t DataBuffer::getCompressedData(char *output, size_t maxLen, uint32_t steps)
+size_t DataBuffer::getCompressedData(char *output, size_t maxLen)
 {
     // Tạo JSON document
-    // Với 300 samples, cần khoảng 300*2*4 = 2400 bytes cho arrays
+    // Mỗi object khoảng 60-80 bytes. Buffer size 10 -> cần khoảng 1KB.
+    // Dùng 4KB cho an toàn nếu sau này tăng buffer size.
     DynamicJsonDocument doc(4096);
+    JsonArray array = doc.to<JsonArray>();
 
-    doc["type"] = "batch";
-    doc["count"] = count_;
-    doc["start_ts"] = buffer_[0].timestamp;
-    doc["interval"] = 1;  // 1 giây/sample
-    doc["steps"] = steps; // Thêm số bước chân
-
-    // Tạo arrays cho HR và SpO2
-    JsonArray hrArray = doc.createNestedArray("hr");
-    JsonArray spo2Array = doc.createNestedArray("spo2");
-
-    // Thêm dữ liệu vào arrays
+    // Duyệt buffer và thêm vào mảng
     uint16_t startIdx = (count_ >= HR_BUFFER_SIZE) ? head_ : 0;
     for (uint16_t i = 0; i < count_; i++)
     {
         uint16_t idx = (startIdx + i) % HR_BUFFER_SIZE;
-        hrArray.add(buffer_[idx].hr);
-        spo2Array.add(buffer_[idx].spo2);
+        HealthSample &s = buffer_[idx];
+
+        JsonObject obj = array.createNestedObject();
+        obj["hr"] = s.hr;
+        obj["spo2"] = s.spo2;
+        obj["steps"] = s.steps;
+        obj["ts"] = s.timestamp;
     }
 
     // Serialize JSON
-    size_t len = serializeJson(doc, output, maxLen);
+    size_t len = serializeJson(array, output, maxLen);
 
-    Serial.printf("[Buffer] Compressed %d samples into %d bytes\n", count_, len);
+    Serial.printf("[Buffer] Generated JSON array with %d samples (%d bytes)\n", count_, len);
 
     return len;
 }

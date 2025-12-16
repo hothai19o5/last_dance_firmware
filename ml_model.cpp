@@ -31,7 +31,7 @@ namespace
 /**
  * @brief Constructor - khởi tạo các biến
  */
-MLModel::MLModel() : inference_count(0), initialized(false)
+MLModel::MLModel() : initialized(false)
 {
 }
 
@@ -121,6 +121,9 @@ float MLModel::runInference(float hr, float spo2, float bmi)
     // Công thức chuẩn hóa: x_norm = (x - mean) / std
     float hr_norm = (hr - modelNorm.hr_mean) / modelNorm.hr_std;
     float spo2_norm = (spo2 - modelNorm.spo2_mean) / modelNorm.spo2_std;
+    float body_temp_norm = 0; ///< body_temp = body_temp_mean
+    float systolic_bp_norm = 0;
+    float diastolic_bp_norm = 0;
     float bmi_norm = (bmi - modelNorm.bmi_mean) / modelNorm.bmi_std;
 
     // === Đổ dữ liệu vào tensor đầu vào ===
@@ -128,7 +131,10 @@ float MLModel::runInference(float hr, float spo2, float bmi)
     {
         model_input->data.f[0] = hr_norm;
         model_input->data.f[1] = spo2_norm;
-        model_input->data.f[2] = bmi_norm;
+        model_input->data.f[2] = body_temp_norm;
+        model_input->data.f[3] = systolic_bp_norm;
+        model_input->data.f[4] = diastolic_bp_norm;
+        model_input->data.f[5] = bmi_norm;
     }
     else
     {
@@ -150,8 +156,7 @@ float MLModel::runInference(float hr, float spo2, float bmi)
         score = model_output->data.f[0]; // Lấy điểm đầu tiên
     }
 
-    inference_count++;
-    Serial.printf("[ML] Inference #%d: Score=%.4f\n", inference_count, score);
+    Serial.printf("[ML] Inference: Score=%.4f\n", score);
 
     return score;
 }
@@ -163,13 +168,4 @@ float MLModel::runInference(float hr, float spo2, float bmi)
 bool MLModel::isInitialized()
 {
     return initialized;
-}
-
-/**
- * @brief Lấy số lần suy diễn đã chạy
- * @return Số lần runInference() được gọi thành công
- */
-int MLModel::getInferenceCount()
-{
-    return inference_count;
 }

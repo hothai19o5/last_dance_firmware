@@ -27,8 +27,7 @@ void PowerManager::begin()
 
     // Đọc lần đầu
     readBatteryVoltage();
-    Serial.printf("[Power] Battery initialized: %.2fV (%d%%)\n",
-                  lastVoltage_, lastPercent_);
+    Serial.printf("[Power] Battery initialized: %.2fV (%d%%)\n", lastVoltage_, lastPercent_);
 }
 
 /**

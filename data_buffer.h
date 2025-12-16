@@ -22,7 +22,8 @@ struct HealthSample
 {
     uint8_t hr;         ///< Nhịp tim (BPM) - 1 byte (0-255)
     uint8_t spo2;       ///< SpO2 (%) - 1 byte (0-100)
-    uint32_t timestamp; ///< Timestamp (giây từ boot)
+    uint32_t steps;     ///< Số bước chân tại thời điểm đo
+    uint32_t timestamp; ///< Timestamp (giây từ boot/epoch)
 };
 
 /**
@@ -38,8 +39,9 @@ public:
     /// @brief Thêm một mẫu dữ liệu vào buffer
     /// @param hr Nhịp tim (BPM)
     /// @param spo2 Độ bão hòa oxy (%)
+    /// @param steps Số bước chân hiện tại
     /// @return true nếu buffer đầy sau khi thêm
-    bool addSample(float hr, float spo2);
+    bool addSample(float hr, float spo2, uint32_t steps);
 
     /// @brief Kiểm tra xem buffer có đầy không
     /// @return true nếu buffer đầy
@@ -56,9 +58,8 @@ public:
     /// @brief Lấy dữ liệu đã nén để gửi qua BLE
     /// @param output Buffer đầu ra (tối thiểu 512 bytes)
     /// @param maxLen Kích thước tối đa của buffer đầu ra
-    /// @param steps Số bước chân hiện tại
     /// @return Số bytes đã ghi vào output
-    size_t getCompressedData(char *output, size_t maxLen, uint32_t steps);
+    size_t getCompressedData(char *output, size_t maxLen);
 
     /// @brief Xóa buffer sau khi đã gửi
     void clear();

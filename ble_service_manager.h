@@ -24,21 +24,26 @@
 // === UUID của User Profile Service ===
 // Dịch vụ này chứa các thông tin cá nhân từ ứng dụng di động
 #define USER_PROFILE_SERVICE_UUID "0000181C-0000-1000-8000-00805F9B34FB"
-#define WEIGHT_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB"             ///< Cân nặng (kg)
-#define HEIGHT_CHAR_UUID "00002A8E-0000-1000-8000-00805F9B34FB"             ///< Chiều cao (m)
-#define GENDER_CHAR_UUID "00002A8C-0000-1000-8000-00805F9B34FB"             ///< Giới tính (1=nam, 0=nữ)
-#define AGE_CHAR_UUID "00002A80-0000-1000-8000-00805F9B34FB"                ///< Tuổi (năm)
-#define STEP_COUNT_ENABLED_CHAR_UUID "00002A81-0000-1000-8000-00805F9B34FB" ///< Bật/tắt đếm bước (1=bật, 0=tắt)
+#define BMI_CHAR_UUID "00002A98-0000-1000-8000-00805F9B34FB"                    ///< Chỉ số khối cơ thể (BMI)
+#define STEP_COUNT_ENABLED_CHAR_UUID "00002A81-0000-1000-8000-00805F9B34FB"     ///< Bật/tắt đếm bước (1=bật, 0=tắt)
+#define ML_ENABLED_CHAR_UUID "00002A99-0000-1000-8000-00805F9B34FB"             ///< Bật/tắt ML (1=bật, 0=tắt)
+#define TIME_SYNC_CHAR_UUID "00002A2B-0000-1000-8000-00805F9B34FB"              ///< Đồng bộ thời gian (Unix timestamp - uint32)
+#define DATA_TRANSMISSION_MODE_CHAR_UUID "00002A9A-0000-1000-8000-00805F9B34FB" ///< Chế độ truyền dữ liệu (0=Realtime, 1=Batch)
 
 // === UUID của Health Data Service ===
 // Dịch vụ này cung cấp dữ liệu sức khỏe theo thời gian thực
 #define HEALTH_DATA_SERVICE_UUID "0000180D-0000-1000-8000-00805F9B34FB"
 #define HEALTH_DATA_BATCH_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB" ///< Dữ liệu sức khỏe (JSON)
-#define DEVICE_STATUS_CHAR_UUID "00002A19-0000-1000-8001-00805F9B34FB"     ///< Trạng thái thiết bị
 
 // === UUID cho Battery Service ===
 #define BATTERY_SERVICE_UUID "0000180F-0000-1000-8000-00805F9B34FB"
 #define BATTERY_LEVEL_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"
+
+enum DataTransmissionMode
+{
+    MODE_REALTIME = 0,
+    MODE_BATCH = 1
+};
 
 /**
  * @class BLEServiceManager
@@ -98,6 +103,13 @@ public:
     /// @return true nếu đếm bước được bật
     bool isStepCountEnabled() const;
 
+    /// @brief Kiểm tra xem ML có được bật không
+    /// @return true nếu ML được bật
+    bool isMLEnabled() const;
+
+    /// @brief Lấy chế độ truyền dữ liệu hiện tại
+    DataTransmissionMode getDataTransmissionMode() const;
+
 private:
     /// @brief Callback được gọi khi ứng dụng kết nối
     void onConnect(BLEServer *pServer) override;
@@ -115,20 +127,21 @@ private:
     BLEService *pBatteryService_;
 
     // Các Characteristic của User Profile Service
-    BLECharacteristic *pWeightChar_;           ///< Cân nặng
-    BLECharacteristic *pHeightChar_;           ///< Chiều cao
-    BLECharacteristic *pGenderChar_;           ///< Giới tính
-    BLECharacteristic *pAgeChar_;              ///< Tuổi
-    BLECharacteristic *pStepCountEnabledChar_; ///< Bật/tắt đếm bước
+    BLECharacteristic *pBmiChar_;                  ///< Chỉ số khối cơ thể (BMI)
+    BLECharacteristic *pStepCountEnabledChar_;     ///< Bật/tắt đếm bước
+    BLECharacteristic *pMLEnabledChar_;            ///< Bật/tắt ML
+    BLECharacteristic *pTimeSyncChar_;             ///< Đồng bộ thời gian
+    BLECharacteristic *pDataTransmissionModeChar_; ///< Chế độ truyền dữ liệu
 
     // Các Characteristic của Health Data Service
     BLECharacteristic *pHealthDataBatchChar_; ///< Dữ liệu sức khỏe (JSON)
-    BLECharacteristic *pDeviceStatusChar_;    ///< Trạng thái thiết bị
-    BLECharacteristic *pBatteryLevelChar_;
+    BLECharacteristic *pBatteryLevelChar_;    ///< Mức pin
 
-    bool clientConnected_;    ///< Cờ: ứng dụng di động có kết nối hay không?
-    bool stepCountEnabled_;   ///< Cờ: bật/tắt đếm bước chân (default = true)
-    UserProfile userProfile_; ///< Hồ sơ người dùng hiện tại
+    bool clientConnected_;                      ///< Cờ: ứng dụng di động có kết nối hay không?
+    bool stepCountEnabled_;                     ///< Cờ: bật/tắt đếm bước chân (default = true)
+    bool mlEnabled_;                            ///< Cờ: bật/tắt ML (default = true)
+    DataTransmissionMode dataTransmissionMode_; ///< Chế độ truyền dữ liệu (Realtime/Batch)
+    UserProfile userProfile_;                   ///< Hồ sơ người dùng hiện tại
     unsigned long lastActivityMs_;
 
     /// @brief Tạo chuỗi JSON chứa dữ liệu sức khỏe để gửi qua BLE

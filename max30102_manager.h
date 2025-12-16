@@ -33,11 +33,7 @@ struct Max30102Data
  */
 struct UserProfile
 {
-    int gender = 1;      ///< Giới tính (1 = nam, 0 = nữ)
-    float weight = 65.0; ///< Cân nặng tính bằng kg
-    float height = 1.77; ///< Chiều cao tính bằng mét
-    int age = 21;        ///< Tuổi (năm)
-    float bmr;           ///< Tỷ lệ chuyển hóa cơ bản (Basal Metabolic Rate) tính bằng kcal/ngày
+    float bmi = 25.003625;
 };
 
 /**

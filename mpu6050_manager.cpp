@@ -130,6 +130,15 @@ void MPU6050Manager::update()
 uint32_t MPU6050Manager::getStepCount() const { return stepCount_; }
 
 /**
+ * @brief Reset số bước về 0
+ */
+void MPU6050Manager::resetStepCount()
+{
+    stepCount_ = 0;
+    // Không reset lastStepMs_ để tránh double count ngay lập tức
+}
+
+/**
  * @brief Lấy độ lớn gia tốc hiện tại
  * @return Độ lớn gia tốc tính bằng g (9.81 m/s²)
  */

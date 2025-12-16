@@ -47,6 +47,9 @@ public:
     /// @return Số bước từ khi khởi động hoặc reset lần cuối
     uint32_t getStepCount() const;
 
+    /// @brief Reset số bước về 0 (dùng khi qua ngày mới)
+    void resetStepCount();
+
     /// @brief Lấy độ lớn gia tốc hiện tại
     /// @return Độ lớn gia tốc tính bằng g (gravitational acceleration)
     float getAccelMagnitudeG() const;

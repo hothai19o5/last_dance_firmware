@@ -1,27 +1,28 @@
 /**
  * @file ble_service_manager.cpp
  * @brief Triển khai quản lý dịch vụ BLE
+ * @author Hồ Xuân Thái
+ * @date 2025
  */
 
 #include "ble_service_manager.h"
 #include <ArduinoJson.h>
+#include <sys/time.h>
+#include <time.h>
 
 /**
  * @brief Constructor - khởi tạo các biến thành viên và giá trị mặc định
  */
 BLEServiceManager::BLEServiceManager()
     : pServer_(nullptr), pUserProfileService_(nullptr), pHealthDataService_(nullptr),
-      pBatteryService_(nullptr), pWeightChar_(nullptr), pHeightChar_(nullptr),
-      pGenderChar_(nullptr), pAgeChar_(nullptr), pStepCountEnabledChar_(nullptr),
-      pHealthDataBatchChar_(nullptr), pDeviceStatusChar_(nullptr), pBatteryLevelChar_(nullptr),
-      clientConnected_(false), stepCountEnabled_(true), lastActivityMs_(0)
+      pBatteryService_(nullptr), pBmiChar_(nullptr), pStepCountEnabledChar_(nullptr),
+      pHealthDataBatchChar_(nullptr), pMLEnabledChar_(nullptr), pBatteryLevelChar_(nullptr),
+      pTimeSyncChar_(nullptr), pDataTransmissionModeChar_(nullptr),
+      clientConnected_(false), stepCountEnabled_(true), mlEnabled_(true),
+      dataTransmissionMode_(MODE_REALTIME), lastActivityMs_(0)
 {
     // Khởi tạo hồ sơ người dùng mặc định
-    userProfile_.gender = 1;    // Nam
-    userProfile_.weight = 65.0; // 65 kg
-    userProfile_.height = 1.77; // 1.77 m
-    userProfile_.age = 21;      // 21 tuổi
-    userProfile_.bmr = 0.0;     // Sẽ được tính toán sau
+    userProfile_.bmi = 25.003625;
 }
 
 /**
@@ -30,8 +31,8 @@ BLEServiceManager::BLEServiceManager()
  * Quy trình:
  * 1. Khởi tạo thiết bị BLE với tên được chỉ định
  * 2. Tạo BLE Server
- * 3. Tạo User Profile Service với 4 Characteristic (cân nặng, chiều cao, giới tính, tuổi)
- * 4. Tạo Health Data Service với 2 Characteristic (dữ liệu sức khỏe, trạng thái thiết bị)
+ * 3. Tạo User Profile Service với 1 Characteristic (BMI)
+ * 4. Tạo Health Data Service với 1 Characteristic (dữ liệu sức khỏe)
  * 5. Bắt đầu quảng cáo BLE để ứng dụng di động có thể khám phá thiết bị
  *
  * @param deviceName Tên thiết bị BLE (ví dụ: "Last Dance")
@@ -51,37 +52,13 @@ bool BLEServiceManager::begin(const char *deviceName)
     // === Tạo User Profile Service ===
     pUserProfileService_ = pServer_->createService(USER_PROFILE_SERVICE_UUID);
 
-    // Characteristic: Cân nặng (WRITE)
-    pWeightChar_ = pUserProfileService_->createCharacteristic(
-        WEIGHT_CHAR_UUID,
+    // Characteristic: Chỉ số khối cơ thể (BMI) (READ + WRITE)
+    pBmiChar_ = pUserProfileService_->createCharacteristic(
+        BMI_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
-    pWeightChar_->setCallbacks(this);
-    uint16_t defaultWeight = (uint16_t)(userProfile_.weight);
-    pWeightChar_->setValue(defaultWeight);
-
-    // Characteristic: Chiều cao (WRITE)
-    pHeightChar_ = pUserProfileService_->createCharacteristic(
-        HEIGHT_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
-    pHeightChar_->setCallbacks(this);
-    uint16_t defaultHeightCm = (uint16_t)(userProfile_.height * 100); // Lưu tính bằng cm
-    pHeightChar_->setValue(defaultHeightCm);
-
-    // Characteristic: Giới tính (WRITE)
-    pGenderChar_ = pUserProfileService_->createCharacteristic(
-        GENDER_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
-    pGenderChar_->setCallbacks(this);
-    uint8_t defaultGender = (uint8_t)userProfile_.gender;
-    pGenderChar_->setValue(&defaultGender, 1);
-
-    // Characteristic: Tuổi (WRITE)
-    pAgeChar_ = pUserProfileService_->createCharacteristic(
-        AGE_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
-    pAgeChar_->setCallbacks(this);
-    uint8_t defaultAge = (uint8_t)userProfile_.age;
-    pAgeChar_->setValue(&defaultAge, 1);
+    pBmiChar_->setCallbacks(this);
+    float defaultBmi = userProfile_.bmi;
+    pBmiChar_->setValue((uint8_t *)&defaultBmi, sizeof(float));
 
     // Characteristic: Bật/tắt đếm bước (READ + WRITE)
     pStepCountEnabledChar_ = pUserProfileService_->createCharacteristic(
@@ -90,6 +67,28 @@ bool BLEServiceManager::begin(const char *deviceName)
     pStepCountEnabledChar_->setCallbacks(this);
     uint8_t defaultStepEnabled = stepCountEnabled_ ? 1 : 0;
     pStepCountEnabledChar_->setValue(&defaultStepEnabled, 1);
+
+    // Characteristic: Bật/tắt ML (READ + WRITE)
+    pMLEnabledChar_ = pUserProfileService_->createCharacteristic(
+        ML_ENABLED_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pMLEnabledChar_->setCallbacks(this);
+    uint8_t defaultMLEnabled = mlEnabled_ ? 1 : 0;
+    pMLEnabledChar_->setValue(&defaultMLEnabled, 1);
+
+    // Characteristic: Đồng bộ thời gian (WRITE)
+    pTimeSyncChar_ = pUserProfileService_->createCharacteristic(
+        TIME_SYNC_CHAR_UUID,
+        BLECharacteristic::PROPERTY_WRITE);
+    pTimeSyncChar_->setCallbacks(this);
+
+    // Characteristic: Chế độ truyền dữ liệu (READ + WRITE)
+    pDataTransmissionModeChar_ = pUserProfileService_->createCharacteristic(
+        DATA_TRANSMISSION_MODE_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pDataTransmissionModeChar_->setCallbacks(this);
+    uint8_t defaultMode = (uint8_t)dataTransmissionMode_;
+    pDataTransmissionModeChar_->setValue(&defaultMode, 1);
 
     pUserProfileService_->start();
 
@@ -102,14 +101,6 @@ bool BLEServiceManager::begin(const char *deviceName)
         HEALTH_DATA_BATCH_CHAR_UUID,
         BLECharacteristic::PROPERTY_NOTIFY);
     pHealthDataBatchChar_->addDescriptor(new BLE2902());
-
-    // Characteristic: Trạng thái thiết bị (READ + NOTIFY)
-    pDeviceStatusChar_ = pHealthDataService_->createCharacteristic(
-        DEVICE_STATUS_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-    pDeviceStatusChar_->addDescriptor(new BLE2902());
-    uint8_t statusOnline = 1; // 1 = thiết bị hoạt động
-    pDeviceStatusChar_->setValue(&statusOnline, 1);
 
     pHealthDataService_->start();
 
@@ -178,39 +169,29 @@ void BLEServiceManager::onDisconnect(BLEServer *pServer)
     BLEDevice::startAdvertising();
 }
 
+/**
+ * @brief Callback được gọi khi ứng dụng di động ghi dữ liệu vào một Characteristic
+ *
+ * Xử lý cập nhật hồ sơ người dùng từ ứng dụng:
+ * - BMI
+ * - Bật/tắt đếm bước
+ * - Bật/tắt ML
+ * - Đồng bộ thời gian hệ thống
+ *
+ * @param pCharacteristic Con trỏ đến Characteristic được ghi
+ */
 void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 {
     lastActivityMs_ = millis(); // Cập nhật thời điểm hoạt động cuối cùng
 
     std::string uuid = pCharacteristic->getUUID().toString().c_str();
 
-    // Cập nhật cân nặng
-    if (uuid == WEIGHT_CHAR_UUID)
+    // Cập nhật BMI
+    if (uuid == BMI_CHAR_UUID)
     {
-        uint16_t weightKg = *(uint16_t *)pCharacteristic->getData();
-        userProfile_.weight = (float)weightKg;
-        Serial.printf("[BLE] Weight updated: %.0f kg\n", userProfile_.weight);
-    }
-    // Cập nhật chiều cao (đổi từ cm sang m)
-    else if (uuid == HEIGHT_CHAR_UUID)
-    {
-        uint16_t heightCm = *(uint16_t *)pCharacteristic->getData();
-        userProfile_.height = (float)heightCm / 100.0;
-        Serial.printf("[BLE] Height updated: %.2f m\n", userProfile_.height);
-    }
-    // Cập nhật giới tính
-    else if (uuid == GENDER_CHAR_UUID)
-    {
-        uint8_t gender = *(uint8_t *)pCharacteristic->getData();
-        userProfile_.gender = (int)gender;
-        Serial.printf("[BLE] Gender updated: %d\n", userProfile_.gender);
-    }
-    // Cập nhật tuổi
-    else if (uuid == AGE_CHAR_UUID)
-    {
-        uint8_t age = *(uint8_t *)pCharacteristic->getData();
-        userProfile_.age = (int)age;
-        Serial.printf("[BLE] Age updated: %d\n", userProfile_.age);
+        float bmi = *(float *)pCharacteristic->getData();
+        userProfile_.bmi = bmi;
+        Serial.printf("[BLE] Updated BMI: %.2f\n", bmi);
     }
     // Cập nhật bật/tắt đếm bước
     else if (uuid == STEP_COUNT_ENABLED_CHAR_UUID)
@@ -218,22 +199,48 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
         uint8_t enabled = *(uint8_t *)pCharacteristic->getData();
         stepCountEnabled_ = (enabled != 0);
         Serial.printf("[BLE] Step count enabled: %s\n", stepCountEnabled_ ? "YES" : "NO");
-        return; // Không cần tính BMR
     }
+    // Cập nhật bật/tắt ML
+    else if (uuid == ML_ENABLED_CHAR_UUID)
+    {
+        uint8_t enabled = *(uint8_t *)pCharacteristic->getData();
+        mlEnabled_ = (enabled != 0);
+        Serial.printf("[BLE] ML enabled: %s\n", mlEnabled_ ? "YES" : "NO");
+    }
+    // Cập nhật thời gian hệ thống
+    else if (uuid == TIME_SYNC_CHAR_UUID)
+    {
+        if (pCharacteristic->getLength() >= 4)
+        {
+            uint32_t timestamp = *(uint32_t *)pCharacteristic->getData();
+            struct timeval tv;
+            tv.tv_sec = timestamp;
+            tv.tv_usec = 0;
+            settimeofday(&tv, NULL);
 
-    // === Tính toán BMR (Basal Metabolic Rate) bằng công thức Mifflin-St Jeor ===
-    // Công thức:
-    // - Nam: BMR = 10×Weight + 6.25×Height - 5×Age + 5 (kcal/day)
-    // - Nữ: BMR = 10×Weight + 6.25×Height - 5×Age - 161 (kcal/day)
-    if (userProfile_.gender == 1) // Nam
-    {
-        userProfile_.bmr = 10 * userProfile_.weight + 6.25 * (userProfile_.height * 100) - 5 * userProfile_.age + 5;
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            Serial.printf("[BLE] Time synced: %02d:%02d:%02d %02d/%02d/%04d (TS: %u)\n",
+                          t->tm_hour, t->tm_min, t->tm_sec,
+                          t->tm_mday, t->tm_mon + 1, t->tm_year + 1900,
+                          timestamp);
+        }
     }
-    else // Nữ
+    // Cập nhật chế độ truyền dữ liệu
+    else if (uuid == DATA_TRANSMISSION_MODE_CHAR_UUID)
     {
-        userProfile_.bmr = 10 * userProfile_.weight + 6.25 * (userProfile_.height * 100) - 5 * userProfile_.age - 161;
+        uint8_t mode = *(uint8_t *)pCharacteristic->getData();
+        if (mode == 0)
+        {
+            dataTransmissionMode_ = MODE_REALTIME;
+            Serial.println("[BLE] Mode switched to REALTIME");
+        }
+        else if (mode == 1)
+        {
+            dataTransmissionMode_ = MODE_BATCH;
+            Serial.println("[BLE] Mode switched to BATCH");
+        }
     }
-    Serial.printf("[BLE] BMR calculated: %.1f kcal/day\n", userProfile_.bmr);
 }
 
 /**
@@ -321,7 +328,7 @@ bool BLEServiceManager::notifyHealthDataBatch(const char *jsonData, size_t len)
     pHealthDataBatchChar_->notify();
 
     lastActivityMs_ = millis();
-    Serial.printf("[BLE] ✅ Sent batch data: %d bytes\n", len);
+    Serial.printf("[BLE] Sent batch data: %d bytes\n", len);
     Serial.println("[BLE] Notify completed");
 
     return true;
@@ -370,6 +377,38 @@ bool BLEServiceManager::isStepCountEnabled() const
     return stepCountEnabled_;
 }
 
+/**
+ * @brief Kiểm tra xem ML có được bật không
+ * @return true nếu ML được bật
+ */
+bool BLEServiceManager::isMLEnabled() const
+{
+    return mlEnabled_;
+}
+
+DataTransmissionMode BLEServiceManager::getDataTransmissionMode() const
+{
+    return dataTransmissionMode_;
+}
+
+/**
+ * @brief Xây dựng chuỗi JSON cho dữ liệu sức khỏe
+ *
+ * Định dạng JSON:
+ * {
+ *   "hr": 75,
+ *   "spo2": 98,
+ *   "steps": 1500,
+ *   "ts": 1698765432,
+ *   "alert": 0.85 // Chỉ khi có cảnh báo
+ * }
+ *
+ * @param hr Nhịp tim (BPM)
+ * @param spo2 Độ bão hòa oxy (%)
+ * @param steps Tổng số bước
+ * @param alertScore Điểm cảnh báo từ mô hình ML (0-1, -1 = không có cảnh báo)
+ * @return Chuỗi JSON dạng String
+ */
 String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t steps, float alertScore)
 {
     // Build compact JSON batch for BLE notify
@@ -378,7 +417,11 @@ String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t ste
     doc["hr"] = (int)hr;
     doc["spo2"] = (int)spo2;
     doc["steps"] = steps;
-    doc["ts"] = millis() / 1000; // timestamp in seconds since boot
+
+    // Use system timestamp (synced via BLE) instead of millis
+    time_t now;
+    time(&now);
+    doc["ts"] = (uint32_t)now;
 
     // Include alert score if provided (> 0)
     if (alertScore >= 0.0)

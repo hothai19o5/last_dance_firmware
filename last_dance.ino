@@ -20,6 +20,7 @@
 #include "ble_service_manager.h"
 #include "power_manager.h"
 #include "data_buffer.h"
+#include <time.h>
 
 // === Global Objects ===
 Max30102Manager max30102Manager;
@@ -35,9 +36,7 @@ static unsigned long lastBatteryReadMs = 0;
 static bool mlInitialized = false;
 static bool max30102Ready = false; // Cờ kiểm tra MAX30102 đã khởi tạo chưa
 static bool isSending = false;     // Cờ đang gửi dữ liệu - tránh gửi lặp
-
-// === Battery update interval ===
-#define BATTERY_UPDATE_INTERVAL_MS 60000 // Cập nhật pin mỗi 1 phút
+static int lastDayProcessed = -1;  // Lưu ngày đã xử lý để reset steps
 
 struct AlertData
 {
@@ -45,6 +44,36 @@ struct AlertData
   float hr;
   float spo2;
 };
+
+/**
+ * @brief Kiểm tra xem đã qua ngày mới chưa để reset số bước
+ */
+void checkNewDay()
+{
+  time_t now;
+  time(&now);
+  struct tm *timeinfo = localtime(&now);
+
+  // Nếu thời gian chưa được set (ví dụ năm 1970), bỏ qua
+  if (timeinfo->tm_year < (2020 - 1900))
+    return;
+
+  // Lần đầu tiên chạy (sau khi sync time), cập nhật lastDayProcessed
+  if (lastDayProcessed == -1)
+  {
+    lastDayProcessed = timeinfo->tm_mday;
+    return;
+  }
+
+  // Nếu ngày hiện tại khác ngày đã xử lý -> Qua ngày mới
+  if (timeinfo->tm_mday != lastDayProcessed)
+  {
+    Serial.printf("[System] New day detected: %d -> %d. Resetting steps.\n",
+                  lastDayProcessed, timeinfo->tm_mday);
+    mpuManager.resetStepCount();
+    lastDayProcessed = timeinfo->tm_mday;
+  }
+}
 
 /**
  * @brief Xử lý ML với dữ liệu HR/SpO2 mới nhất từ buffer
@@ -66,7 +95,7 @@ void processML(float hr, float spo2)
   Serial.printf("[ML] Processing: HR=%.1f, SPO2=%.1f\n", hr, spo2);
 
   UserProfile &profile = bleManager.getUserProfile();
-  float bmi = profile.weight / (profile.height * profile.height);
+  float bmi = profile.bmi;
   float score = mlModel.runInference(hr, spo2, bmi);
 
   if (score > 1)
@@ -108,23 +137,22 @@ void sendBatchData()
   Serial.println("[Main] ========== SENDING BATCH DATA ==========");
   Serial.printf("[Main] Buffer has %d samples ready to send\n", dataBuffer.getCount());
 
-  // Chuẩn bị buffer để gửi (bao gồm steps hiện tại)
-  uint32_t currentSteps = mpuManager.getStepCount();
+  // Chuẩn bị buffer để gửi
   char jsonBuffer[4096];
-  size_t len = dataBuffer.getCompressedData(jsonBuffer, sizeof(jsonBuffer), currentSteps);
+  size_t len = dataBuffer.getCompressedData(jsonBuffer, sizeof(jsonBuffer));
 
   if (len > 0)
   {
     Serial.printf("[Main] JSON generated: %d bytes\n", len);
     if (bleManager.notifyHealthDataBatch(jsonBuffer, len))
     {
-      Serial.println("[Main] ✅ Batch data sent successfully");
+      Serial.println("[Main] Batch data sent successfully");
       dataBuffer.clear();
-      Serial.println("[Main] ✅ Buffer cleared");
+      Serial.println("[Main] Buffer cleared");
     }
     else
     {
-      Serial.println("[Main] ❌ Failed to send batch data");
+      Serial.println("[Main] Failed to send batch data");
     }
   }
 
@@ -161,18 +189,33 @@ void readAndBufferHR()
     bool bufferFull = false;
 
     // Chạy ML với dữ liệu mới nhất (đồng bộ với việc đọc HR)
-    processML(data.hr, data.spo2);
-
-    // Gửi dữ liệu realtime qua BLE
-    if (bleManager.isClientConnected())
+    // Chỉ chạy nếu được enable qua BLE
+    if (bleManager.isMLEnabled())
     {
-      uint32_t steps = mpuManager.getStepCount();
-      bleManager.notifyHealthData(data.hr, data.spo2, steps);
+      processML(data.hr, data.spo2);
     }
 
-    if (bufferFull)
+    // Xử lý gửi dữ liệu dựa trên chế độ
+    DataTransmissionMode mode = bleManager.getDataTransmissionMode();
+
+    if (mode == MODE_REALTIME)
     {
-      Serial.println("[Main] Buffer full - will send data");
+      // Chế độ Realtime: Gửi ngay lập tức, KHÔNG lưu buffer
+      if (bleManager.isClientConnected())
+      {
+        uint32_t steps = mpuManager.getStepCount();
+        bleManager.notifyHealthData(data.hr, data.spo2, steps);
+      }
+    }
+    else // MODE_BATCH
+    {
+      // Chế độ Batch: Lưu vào buffer, KHÔNG gửi ngay
+      uint32_t currentSteps = mpuManager.getStepCount();
+      bool bufferFull = dataBuffer.addSample(data.hr, data.spo2, currentSteps);
+      if (bufferFull)
+      {
+        Serial.println("[Main] Buffer full - ready to send batch");
+      }
     }
   }
 }
@@ -187,11 +230,7 @@ void updateBattery()
     return;
   lastBatteryReadMs = millis();
 
-  // TODO: Tạm thời comment - dùng giá trị fake
-  // uint8_t batteryPercent = powerManager.getBatteryPercent();
-
-  // Giá trị pin fake để test
-  uint8_t batteryPercent = 75; // Fake battery level
+  uint8_t batteryPercent = powerManager.getBatteryPercent();
 
   bleManager.notifyBatteryLevel(batteryPercent);
 
@@ -206,8 +245,7 @@ void setup()
   Serial.println("\n\n=== ESP32-C3 Health Monitor (Single Core) ===");
 
   // Khởi tạo Power Manager
-  // TODO: Tạm thời comment - dùng giá trị fake
-  // powerManager.begin();
+  powerManager.begin();
 
   // Khởi tạo BLE
   bleManager.begin("Last Dance");
@@ -246,30 +284,21 @@ void loop()
     mpuManager.update();
   }
 
+  // 2.5 Kiểm tra ngày mới để reset bước chân
+  checkNewDay();
+
   // 3. Gửi batch data khi đủ điều kiện
-  // Tạm thời disable batch data để gửi realtime
-  // sendBatchData();
+  // Chỉ gửi nếu đang ở chế độ Batch
+  if (bleManager.getDataTransmissionMode() == MODE_BATCH)
+  {
+    sendBatchData();
+  }
 
   // 4. Cập nhật mức pin
   updateBattery();
 
   // Feed watchdog để tránh timeout
   yield();
-
-  // Cập nhật UI mỗi giây
-  // static unsigned long lastUiUpdate = 0;
-  // if (millis() - lastUiUpdate > 1000)
-  // {
-  //   Max30102Data d = max30102Manager.getCurrentData();
-  //   uint32_t steps = mpuManager.getStepCount();
-
-  //   unsigned long totalSeconds = millis() / 1000;
-  //   int hour = (totalSeconds / 3600) % 24;
-  //   int minute = (totalSeconds / 60) % 60;
-
-  //   Serial.printf("[Status] HR=%.0f bpm, SpO2=%.0f%%, Steps=%d, Time=%02d:%02d\n", d.hr, d.spo2, steps, hour, minute);
-  //   lastUiUpdate = millis();
-  // }
 
   delay(10);
 }

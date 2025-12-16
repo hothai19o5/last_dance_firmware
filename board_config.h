@@ -1,6 +1,8 @@
 /**
  * @file board_config.h
- * @brief Cấu hình chân cho các board ESP32 khác nhau
+ * @brief Cấu hình chân cho board ESP32-C3 Health Monitor
+ * @author Hồ Xuân Thái
+ * @date 2025
  */
 
 #pragma once
@@ -18,7 +20,7 @@
 #define BATTERY_ADC_PIN 0 // GPIO0 (ADC1_CH0) - kết nối với voltage divider
 
 // === Buffer và timing ===
-#define HR_BUFFER_SIZE 10          // 100 samples = 50 giây (2 sample/giây)
+#define HR_BUFFER_SIZE 10           // 100 samples = 50 giây (2 sample/giây)
 #define HR_SAMPLE_INTERVAL_MS 500   // Đọc HR mỗi 0.5 giây
 #define DATA_SEND_INTERVAL_MS 60000 // Gửi dữ liệu mỗi 1 phút (60000ms)
 
@@ -26,3 +28,6 @@
 #define BATTERY_FULL_VOLTAGE 4.2  // Voltage khi pin đầy (Li-Po)
 #define BATTERY_EMPTY_VOLTAGE 3.0 // Voltage khi pin cạn
 #define VOLTAGE_DIVIDER_RATIO 2.0 // Tỉ lệ voltage divider (R1=R2)
+
+// === Battery update interval ===
+#define BATTERY_UPDATE_INTERVAL_MS 60000 // Cập nhật pin mỗi 1 phút
