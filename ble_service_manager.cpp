@@ -6,7 +6,6 @@
  */
 
 #include "ble_service_manager.h"
-#include <ArduinoJson.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -244,7 +243,7 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 }
 
 /**
- * @brief Gửi dữ liệu sức khỏe hiện tại đến ứng dụng di động
+ * @brief Gửi dữ liệu sức khỏe hiện tại đến ứng dụng di động (Binary)
  *
  * @param hr Nhịp tim (BPM)
  * @param spo2 Độ bão hòa oxy (%)
@@ -258,16 +257,21 @@ void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps)
         return;
     }
 
-    // Xây dựng dữ liệu JSON
-    String jsonData = buildHealthDataJSON(hr, spo2, steps, -1.0);
+    HealthDataPacket packet;
+    packet.hr = (uint8_t)hr;
+    packet.spo2 = (uint8_t)spo2;
+    packet.steps = steps;
+    
+    time_t now;
+    time(&now);
+    packet.timestamp = (uint32_t)now;
 
-    // Cập nhật giá trị của Characteristic
-    pHealthDataBatchChar_->setValue(jsonData.c_str());
-
-    // Gửi thông báo đến ứng dụng
+    // Cập nhật giá trị của Characteristic (10 bytes)
+    pHealthDataBatchChar_->setValue((uint8_t *)&packet, sizeof(packet));
     pHealthDataBatchChar_->notify();
 
-    Serial.printf("[BLE] Notified health data: %s\n", jsonData.c_str());
+    Serial.printf("[BLE] Notified binary data: HR=%d, SpO2=%d, Steps=%d, TS=%u\n",
+                  packet.hr, packet.spo2, packet.steps, packet.timestamp);
 }
 
 /**
@@ -286,53 +290,52 @@ void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t
         return;
     }
 
-    // Xây dựng dữ liệu JSON (bao gồm alertScore)
-    String jsonData = buildHealthDataJSON(hr, spo2, steps, alertScore);
+    // Packet structure: [HealthDataPacket (10 bytes)] + [AlertScore (4 bytes)]
+    // Total: 14 bytes
+    
+    uint8_t buffer[sizeof(HealthDataPacket) + sizeof(float)];
+    
+    HealthDataPacket *packet = (HealthDataPacket *)buffer;
+    packet->hr = (uint8_t)hr;
+    packet->spo2 = (uint8_t)spo2;
+    packet->steps = steps;
+    
+    time_t now;
+    time(&now);
+    packet->timestamp = (uint32_t)now;
+
+    // Copy alert score float to the end of buffer
+    memcpy(buffer + sizeof(HealthDataPacket), &alertScore, sizeof(float));
 
     // Cập nhật giá trị của Characteristic
-    pHealthDataBatchChar_->setValue(jsonData.c_str());
+    pHealthDataBatchChar_->setValue(buffer, sizeof(buffer));
 
     // Gửi thông báo đến ứng dụng
     pHealthDataBatchChar_->notify();
 
-    Serial.printf("[BLE] Notified health data WITH ALERT: %s\n", jsonData.c_str());
+    Serial.printf("[BLE] Notified binary data WITH ALERT: Score=%.4f\n", alertScore);
 }
 
 /**
- * @brief Gửi batch dữ liệu HR/SpO2 qua BLE
- *
- * Do giới hạn MTU, dữ liệu lớn sẽ được chia thành nhiều packet
+ * @brief Gửi batch dữ liệu HR/SpO2 qua BLE (Binary Array)
  */
-bool BLEServiceManager::notifyHealthDataBatch(const char *jsonData, size_t len)
+bool BLEServiceManager::notifyHealthDataBatch(uint8_t *data, size_t len)
 {
-    // Tạm thời disable batch data theo yêu cầu
-    Serial.println("[BLE] Batch data sending is disabled");
-    return false;
-
-    /*
     if (!clientConnected_)
     {
         Serial.println("[BLE] Cannot send batch - not connected");
         return false;
     }
 
-    // Log toàn bộ JSON
-    Serial.printf("[BLE] Preparing to send batch data: %d bytes\n", len);
-    Serial.println("[BLE] Full JSON to send:");
-    Serial.println(jsonData);
-    Serial.println("[BLE] =================");
+    Serial.printf("[BLE] Sending binary batch data: %d bytes\n", len);
 
     // Gửi toàn bộ dữ liệu một lần bằng uint8_t array
     // setValue với uint8_t* và length sẽ gửi toàn bộ data
-    pHealthDataBatchChar_->setValue((uint8_t *)jsonData, len);
+    pHealthDataBatchChar_->setValue(data, len);
     pHealthDataBatchChar_->notify();
 
     lastActivityMs_ = millis();
-    Serial.printf("[BLE] Sent batch data: %d bytes\n", len);
-    Serial.println("[BLE] Notify completed");
-
     return true;
-    */
 }
 
 /**
@@ -389,47 +392,4 @@ bool BLEServiceManager::isMLEnabled() const
 DataTransmissionMode BLEServiceManager::getDataTransmissionMode() const
 {
     return dataTransmissionMode_;
-}
-
-/**
- * @brief Xây dựng chuỗi JSON cho dữ liệu sức khỏe
- *
- * Định dạng JSON:
- * {
- *   "hr": 75,
- *   "spo2": 98,
- *   "steps": 1500,
- *   "ts": 1698765432,
- *   "alert": 0.85 // Chỉ khi có cảnh báo
- * }
- *
- * @param hr Nhịp tim (BPM)
- * @param spo2 Độ bão hòa oxy (%)
- * @param steps Tổng số bước
- * @param alertScore Điểm cảnh báo từ mô hình ML (0-1, -1 = không có cảnh báo)
- * @return Chuỗi JSON dạng String
- */
-String BLEServiceManager::buildHealthDataJSON(float hr, float spo2, uint32_t steps, float alertScore)
-{
-    // Build compact JSON batch for BLE notify
-    // Format: {"hr":75,"spo2":98,"steps":1500,"cal":120.5,"ts":1698765432,"alert":0.85}
-    StaticJsonDocument<160> doc;
-    doc["hr"] = (int)hr;
-    doc["spo2"] = (int)spo2;
-    doc["steps"] = steps;
-
-    // Use system timestamp (synced via BLE) instead of millis
-    time_t now;
-    time(&now);
-    doc["ts"] = (uint32_t)now;
-
-    // Include alert score if provided (> 0)
-    if (alertScore >= 0.0)
-    {
-        doc["alert"] = round(alertScore * 10000) / 10000.0; // 4 decimals
-    }
-
-    String output;
-    serializeJson(doc, output);
-    return output;
 }

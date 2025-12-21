@@ -6,7 +6,6 @@
  */
 
 #include "data_buffer.h"
-#include <ArduinoJson.h>
 #include <time.h>
 
 /**
@@ -35,7 +34,7 @@ bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
     }
 
     // Tạo mẫu mới
-    HealthSample sample;
+    HealthDataPacket sample;
     sample.hr = (uint8_t)constrain(hr, 0, 255);
     sample.spo2 = (uint8_t)constrain(spo2, 0, 100);
     sample.steps = steps;
@@ -54,8 +53,8 @@ bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
         count_++;
     }
 
-    Serial.printf("[Buffer] Added sample: HR=%d, SpO2=%d, Steps=%u, Count=%d/%d\n",
-                  sample.hr, sample.spo2, sample.steps, count_, HR_BUFFER_SIZE);
+    Serial.printf("[Buffer] Added sample: HR=%d, SpO2=%d, Steps=%u, Count=%d/%d, TS=%u\n",
+                  sample.hr, sample.spo2, sample.steps, count_, HR_BUFFER_SIZE, sample.timestamp);
 
     return isFull();
 }
@@ -70,11 +69,6 @@ bool DataBuffer::isFull() const
 
 /**
  * @brief Kiểm tra xem có nên gửi dữ liệu không
- *
- * Điều kiện gửi:
- * 1. Buffer đầy (HR_BUFFER_SIZE samples)
- * 2. Hoặc đã quá DATA_SEND_INTERVAL_MS (mặc định 1 phút) kể từ mẫu đầu tiên
- * 3. Và có ít nhất MIN_SAMPLES_TO_SEND mẫu trong buffer
  */
 bool DataBuffer::shouldSend() const
 {
@@ -108,43 +102,38 @@ uint16_t DataBuffer::getCount() const
 }
 
 /**
- * @brief Lấy dữ liệu dạng mảng JSON các object realtime
+ * @brief Lấy dữ liệu binary để gửi qua BLE
  *
- * Format JSON:
- * [
- *   {"hr": 75, "spo2": 98, "steps": 1500, "ts": 1700000001},
- *   {"hr": 76, "spo2": 97, "steps": 1500, "ts": 1700000002},
- *   ...
- * ]
+ * Chỉ đơn giản là copy các struct HealthDataPacket từ buffer vòng vào output buffer.
+ *
+ * @param output Buffer đầu ra
+ * @param maxLen Kích thước tối đa của buffer đầu ra
+ * @return Số bytes đã ghi
  */
-size_t DataBuffer::getCompressedData(char *output, size_t maxLen)
+size_t DataBuffer::getBinaryData(uint8_t *output, size_t maxLen)
 {
-    // Tạo JSON document
-    // Mỗi object khoảng 60-80 bytes. Buffer size 10 -> cần khoảng 1KB.
-    // Dùng 4KB cho an toàn nếu sau này tăng buffer size.
-    DynamicJsonDocument doc(4096);
-    JsonArray array = doc.to<JsonArray>();
+    size_t packetSize = sizeof(HealthDataPacket);
+    size_t totalSize = count_ * packetSize;
 
-    // Duyệt buffer và thêm vào mảng
+    if (totalSize > maxLen)
+    {
+        Serial.println("[Buffer] Output buffer too small!");
+        return 0;
+    }
+
+    // Duyệt buffer và copy vào output
+    // Lưu ý buffer là circular, nên cần duyệt từ phần tử cũ nhất
     uint16_t startIdx = (count_ >= HR_BUFFER_SIZE) ? head_ : 0;
+    
     for (uint16_t i = 0; i < count_; i++)
     {
         uint16_t idx = (startIdx + i) % HR_BUFFER_SIZE;
-        HealthSample &s = buffer_[idx];
-
-        JsonObject obj = array.createNestedObject();
-        obj["hr"] = s.hr;
-        obj["spo2"] = s.spo2;
-        obj["steps"] = s.steps;
-        obj["ts"] = s.timestamp;
+        memcpy(output + (i * packetSize), &buffer_[idx], packetSize);
     }
 
-    // Serialize JSON
-    size_t len = serializeJson(array, output, maxLen);
+    Serial.printf("[Buffer] Prepared binary data: %d samples (%d bytes)\n", count_, totalSize);
 
-    Serial.printf("[Buffer] Generated JSON array with %d samples (%d bytes)\n", count_, len);
-
-    return len;
+    return totalSize;
 }
 
 /**
@@ -170,11 +159,11 @@ void DataBuffer::resetSendTimer()
 /**
  * @brief Lấy mẫu mới nhất trong buffer
  */
-HealthSample DataBuffer::getLatestSample() const
+HealthDataPacket DataBuffer::getLatestSample() const
 {
     if (count_ == 0)
     {
-        HealthSample empty = {0, 0, 0};
+        HealthDataPacket empty = {0, 0, 0, 0};
         return empty;
     }
 

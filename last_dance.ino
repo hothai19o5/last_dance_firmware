@@ -138,13 +138,13 @@ void sendBatchData()
   Serial.printf("[Main] Buffer has %d samples ready to send\n", dataBuffer.getCount());
 
   // Chuẩn bị buffer để gửi
-  char jsonBuffer[4096];
-  size_t len = dataBuffer.getCompressedData(jsonBuffer, sizeof(jsonBuffer));
+  uint8_t binaryBuffer[4096];
+  size_t len = dataBuffer.getBinaryData(binaryBuffer, sizeof(binaryBuffer));
 
   if (len > 0)
   {
-    Serial.printf("[Main] JSON generated: %d bytes\n", len);
-    if (bleManager.notifyHealthDataBatch(jsonBuffer, len))
+    Serial.printf("[Main] Binary data generated: %d bytes\n", len);
+    if (bleManager.notifyHealthDataBatch(binaryBuffer, len))
     {
       Serial.println("[Main] Batch data sent successfully");
       dataBuffer.clear();

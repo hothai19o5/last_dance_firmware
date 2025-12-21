@@ -13,18 +13,7 @@
 #pragma once
 #include <Arduino.h>
 #include "board_config.h"
-
-/**
- * @struct HealthSample
- * @brief Cấu trúc lưu 1 mẫu dữ liệu sức khỏe
- */
-struct HealthSample
-{
-    uint8_t hr;         ///< Nhịp tim (BPM) - 1 byte (0-255)
-    uint8_t spo2;       ///< SpO2 (%) - 1 byte (0-100)
-    uint32_t steps;     ///< Số bước chân tại thời điểm đo
-    uint32_t timestamp; ///< Timestamp (giây từ boot/epoch)
-};
+#include "ble_service_manager.h" // Để sử dụng HealthDataPacket
 
 /**
  * @class DataBuffer
@@ -55,11 +44,11 @@ public:
     /// @return Số mẫu hiện có
     uint16_t getCount() const;
 
-    /// @brief Lấy dữ liệu đã nén để gửi qua BLE
-    /// @param output Buffer đầu ra (tối thiểu 512 bytes)
+    /// @brief Lấy dữ liệu binary để gửi qua BLE
+    /// @param output Buffer đầu ra
     /// @param maxLen Kích thước tối đa của buffer đầu ra
     /// @return Số bytes đã ghi vào output
-    size_t getCompressedData(char *output, size_t maxLen);
+    size_t getBinaryData(uint8_t *output, size_t maxLen);
 
     /// @brief Xóa buffer sau khi đã gửi
     void clear();
@@ -69,12 +58,12 @@ public:
 
     /// @brief Lấy mẫu mới nhất
     /// @return Mẫu dữ liệu mới nhất
-    HealthSample getLatestSample() const;
+    HealthDataPacket getLatestSample() const;
 
 private:
-    HealthSample buffer_[HR_BUFFER_SIZE]; ///< Buffer lưu trữ
-    uint16_t count_;                      ///< Số mẫu hiện có
-    uint16_t head_;                       ///< Vị trí ghi tiếp theo
-    unsigned long lastSendMs_;            ///< Thời điểm gửi lần cuối
-    unsigned long firstSampleMs_;         ///< Thời điểm mẫu đầu tiên
+    HealthDataPacket buffer_[HR_BUFFER_SIZE]; ///< Buffer lưu trữ (dùng struct chung)
+    uint16_t count_;                          ///< Số mẫu hiện có
+    uint16_t head_;                           ///< Vị trí ghi tiếp theo
+    unsigned long lastSendMs_;                ///< Thời điểm gửi lần cuối
+    unsigned long firstSampleMs_;             ///< Thời điểm mẫu đầu tiên
 };
