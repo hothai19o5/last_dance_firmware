@@ -52,25 +52,23 @@ enum DataTransmissionMode
 };
 
 /**
-
  * @struct HealthDataPacket
-
- * @brief Cấu trúc gói tin binary (8 bytes)
-
+ * @brief Cấu trúc gói tin binary (18 bytes)
+ *
+ * Cấu trúc này được sử dụng cho cả Realtime và Batch mode.
+ * Mobile app phải parse đúng 18 bytes này.
  */
-
 struct __attribute__((packed)) HealthDataPacket
-
 {
-
-    uint32_t timestamp; // 4 bytes
-
-    uint16_t steps; // 2 bytes
-
-    uint8_t hr; // 1 byte
-
-    uint8_t spo2; // 1 byte
-};
+    uint32_t timestamp;        // 4 bytes - Unix timestamp
+    uint16_t steps;            // 2 bytes - Total steps
+    uint8_t hr;                // 1 byte  - Heart rate (BPM)
+    uint8_t spo2;              // 1 byte  - SpO2 (%)
+    float alertScore;          // 4 bytes - ML alert score (0.0 - 1.0)
+    uint8_t activityStatus;    // 1 byte  - Activity (0=Still, 1=Walking, 2=Running, 3=Sleeping)
+    uint16_t sleepDurationMin; // 2 bytes - Sleep duration in minutes
+    uint8_t reserved[3];       // 3 bytes - Reserved for future use
+}; // Total: 18 bytes
 
 /**
 
@@ -136,6 +134,10 @@ public:
     /// @param alertScore Điểm cảnh báo từ mô hình ML (0-1)
 
     void notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float alertScore);
+
+    /// @brief Gửi dữ liệu sức khỏe mở rộng (18 bytes)
+    void notifyHealthDataExtended(float hr, float spo2, uint32_t steps, float alertScore,
+                                  uint8_t activityStatus, uint16_t sleepDurationMin);
 
     /// @brief Gửi batch dữ liệu HR/SpO2 (Binary Array)
 
@@ -234,3 +236,6 @@ private:
 
     unsigned long lastActivityMs_;
 };
+
+// HealthDataPacket (18 bytes) is now the only packet type used for both Realtime and Batch
+// See struct definition above

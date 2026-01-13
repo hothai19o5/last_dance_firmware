@@ -19,7 +19,11 @@ static constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B; ///< Byte cao của X accelera
 MPU6050Manager::MPU6050Manager()
     : wire_(nullptr), addr_(0x68), ax_(0), ay_(0), az_(0),
       mag_g_(0.0f), prevRawMag_(0.0f), hpVal_(0.0f), alphaHP_(0.97f),
-      stepCount_(0), lastStepMs_(0), minStepIntervalMs_(600), stepThreshold_(0.55f) {}
+      stepCount_(0), lastStepMs_(0), minStepIntervalMs_(600), stepThreshold_(0.55f),
+      activityStatus_(ACTIVITY_RESTING), stepsSinceLastCheck_(0),
+      lastActivityCheckMs_(0), activityCheckIntervalMs_(1000),
+      sleepDurationSeconds_(0), sleepStartMs_(0), isSleeping_(false),
+      lowActivityDurationMs_(0) {}
 
 /**
  * @brief Khởi tạo MPU6050 trên bus I2C được chỉ định
@@ -64,63 +68,6 @@ bool MPU6050Manager::begin(TwoWire &wire, uint8_t address)
     hpVal_ = 0.0f;
 
     return true;
-}
-
-/**
- * @brief Cập nhật trạng thái cảm biến và phát hiện bước chân
- *
- * Quá trình:
- * 1. Đọc gia tốc 3 chiều từ MPU6050
- * 2. Tính độ lớn gia tốc (magnitude)
- * 3. Áp dụng bộ lọc high-pass để loại bỏ trọng lực
- * 4. Phát hiện bước khi:
- *    - High-pass filtered magnitude > ngưỡng
- *    - Khoảng thời gian từ bước trước > minStepIntervalMs (để tránh nhiễu)
- * 5. Tăng bộ đếm bước
- *
- * Gọi hàm này với tần suất 50-100 Hz để có độ chính xác tốt.
- */
-void MPU6050Manager::update()
-{
-    if (!wire_)
-        return;
-
-    // Đọc gia tốc thô từ cảm biến
-    readAccel();
-
-    // Tính độ lớn gia tốc: |a| = sqrt(ax^2 + ay^2 + az^2)
-    float m = sqrtf((float)ax_ * ax_ + (float)ay_ * ay_ + (float)az_ * az_);
-    mag_g_ = m / 16384.0f; // Chuyển đổi từ thô sang g
-
-    // Lọc high-pass để loại bỏ trọng lực (phần tử DC)
-    float hp = highPass(mag_g_);
-    hpVal_ = hp;
-
-    // Phát hiện đỉnh (peak) - bất kỳ khi nào HP magnitude vượt ngưỡng
-    // và đủ thời gian đã trôi qua kể từ bước cuối cùng (tránh nhiễu)
-    static float prevHp = 0;
-    static bool rising = false;
-
-    uint32_t now = millis();
-
-    // Phát hiện sườn lên
-    if (hp > prevHp && hp > 0)
-    {
-        rising = true;
-    }
-
-    // Phát hiện đỉnh thật sự (peak)
-    if (rising && hp < prevHp)
-    {
-        if (prevHp > stepThreshold_ && (now - lastStepMs_) > minStepIntervalMs_)
-        {
-            stepCount_++;
-            lastStepMs_ = now;
-        }
-        rising = false;
-    }
-
-    prevHp = hp;
 }
 
 /**
@@ -219,4 +166,198 @@ float MPU6050Manager::highPass(float x)
     float y = alphaHP_ * (hpVal_ + x - prevRawMag_);
     prevRawMag_ = x; // Lưu lại giá trị hiện tại cho lần tiếp theo
     return y;
+}
+
+/**
+ * @brief Lấy trạng thái hoạt động hiện tại
+ * @return ActivityStatus enum
+ */
+ActivityStatus MPU6050Manager::getActivityStatus() const
+{
+    return activityStatus_;
+}
+
+/**
+ * @brief Phân loại hoạt động dựa trên tần suất bước chân
+ *
+ * Logic:
+ * - Sleeping: isSleeping_ == true (được set bởi updateSleepDetection)
+ * - Resting: 0 steps trong 1 giây
+ * - Walking: < 2 steps/sec
+ * - Running: >= 2.5 steps/sec
+ *
+ * Gọi hàm này mỗi giây để cập nhật
+ */
+void MPU6050Manager::update()
+{
+    if (!wire_)
+        return;
+
+    // Đọc gia tốc thô từ cảm biến
+    readAccel();
+
+    // Tính độ lớn gia tốc: |a| = sqrt(ax^2 + ay^2 + az^2)
+    float m = sqrtf((float)ax_ * ax_ + (float)ay_ * ay_ + (float)az_ * az_);
+    mag_g_ = m / 16384.0f; // Chuyển đổi từ thô sang g
+
+    // Lọc high-pass để loại bỏ trọng lực (phần tử DC)
+    float hp = highPass(mag_g_);
+    hpVal_ = hp;
+
+    // Phát hiện đỉnh (peak) - bất kỳ khi nào HP magnitude vượt ngưỡng
+    // và đủ thời gian đã trôi qua kể từ bước cuối cùng (tránh nhiễu)
+    static float prevHp = 0;
+    static bool rising = false;
+
+    uint32_t now = millis();
+
+    // Phát hiện sườn lên
+    if (hp > prevHp && hp > 0)
+    {
+        rising = true;
+    }
+
+    // Phát hiện đỉnh thật sự (peak)
+    if (rising && hp < prevHp)
+    {
+        if (prevHp > stepThreshold_ && (now - lastStepMs_) > minStepIntervalMs_)
+        {
+            stepCount_++;
+            stepsSinceLastCheck_++;
+            lastStepMs_ = now;
+
+            // Log mỗi 10 bước để không spam quá nhiều
+            if (stepCount_ % 10 == 0)
+            {
+                Serial.printf("[MPU] Step detected! Total: %u steps\n", stepCount_);
+            }
+
+            // Reset low activity timer nếu có bước chân
+            lowActivityDurationMs_ = 0;
+        }
+        rising = false;
+    }
+
+    prevHp = hp;
+
+    // Activity classification - check mỗi 1 giây
+    if ((now - lastActivityCheckMs_) >= activityCheckIntervalMs_)
+    {
+        uint32_t elapsedSec = (now - lastActivityCheckMs_) / 1000;
+        if (elapsedSec == 0)
+            elapsedSec = 1; // Tránh chia cho 0
+
+        // Tính steps per second
+        float stepsPerSec = (float)stepsSinceLastCheck_ / (float)elapsedSec;
+
+        // Lưu trạng thái cũ để so sánh
+        ActivityStatus oldStatus = activityStatus_;
+
+        // Phân loại hoạt động
+        if (isSleeping_)
+        {
+            activityStatus_ = ACTIVITY_SLEEPING;
+        }
+        else if (stepsSinceLastCheck_ == 0)
+        {
+            activityStatus_ = ACTIVITY_RESTING;
+            // Tăng low activity timer
+            lowActivityDurationMs_ += activityCheckIntervalMs_;
+        }
+        else if (stepsPerSec < 2.0f)
+        {
+            activityStatus_ = ACTIVITY_WALKING;
+            lowActivityDurationMs_ = 0;
+        }
+        else
+        {
+            activityStatus_ = ACTIVITY_RUNNING;
+            lowActivityDurationMs_ = 0;
+        }
+
+        // Log khi có thay đổi trạng thái
+        if (oldStatus != activityStatus_)
+        {
+            const char *statusNames[] = {"SLEEPING", "RESTING", "WALKING", "RUNNING"};
+            Serial.printf("[MPU] Activity changed: %s -> %s (%.1f steps/sec)\n",
+                          statusNames[oldStatus], statusNames[activityStatus_], stepsPerSec);
+        }
+
+        // Reset counter cho lần check tiếp theo
+        stepsSinceLastCheck_ = 0;
+        lastActivityCheckMs_ = now;
+    }
+}
+
+/**
+ * @brief Cập nhật phát hiện giấc ngủ dựa trên low movement + heart rate
+ *
+ * Logic phát hiện ngủ:
+ * - Low movement (không có bước chân) trong 5 phút liên tục
+ * - Heart rate < 60 BPM
+ *
+ * @param heartRate Nhịp tim hiện tại (BPM)
+ */
+void MPU6050Manager::updateSleepDetection(uint8_t heartRate)
+{
+    uint32_t now = millis();
+
+    // Điều kiện phát hiện ngủ: low activity + HR thấp
+    bool sleepCondition = (lowActivityDurationMs_ >= SLEEP_DETECT_THRESHOLD_MS) && (heartRate > 0 && heartRate < 60);
+
+    if (sleepCondition && !isSleeping_)
+    {
+        // Bắt đầu ngủ
+        isSleeping_ = true;
+        sleepStartMs_ = now;
+        Serial.println("[MPU6050] Sleep detected");
+    }
+    else if (!sleepCondition && isSleeping_)
+    {
+        // Thức dậy
+        isSleeping_ = false;
+
+        // Cộng dồn thời gian ngủ
+        if (sleepStartMs_ > 0)
+        {
+            uint32_t sleepDuration = (now - sleepStartMs_) / 1000; // Convert to seconds
+            sleepDurationSeconds_ += sleepDuration;
+            Serial.printf("[MPU6050] Wake detected. Slept for %lu seconds\n", sleepDuration);
+        }
+
+        sleepStartMs_ = 0;
+    }
+    else if (isSleeping_ && sleepStartMs_ > 0)
+    {
+        // Đang ngủ - cập nhật thời gian ngủ hiện tại (không cộng vào tổng cho đến khi thức)
+        // Thời gian ngủ sẽ được cộng khi thức dậy
+    }
+}
+
+/**
+ * @brief Lấy tổng thời gian ngủ tính bằng phút
+ * @return Số phút đã ngủ (bao gồm cả giấc ngủ hiện tại nếu đang ngủ)
+ */
+uint16_t MPU6050Manager::getSleepDurationMinutes() const
+{
+    uint32_t totalSleepSec = sleepDurationSeconds_;
+
+    // Nếu đang ngủ, thêm thời gian ngủ hiện tại
+    if (isSleeping_ && sleepStartMs_ > 0)
+    {
+        uint32_t currentSleepSec = (millis() - sleepStartMs_) / 1000;
+        totalSleepSec += currentSleepSec;
+    }
+
+    return (uint16_t)(totalSleepSec / 60); // Convert seconds to minutes
+}
+
+/**
+ * @brief Reset thời gian ngủ về 0 (gọi mỗi nửa đêm)
+ */
+void MPU6050Manager::resetSleepDuration()
+{
+    sleepDurationSeconds_ = 0;
+    // Không reset sleepStartMs_ nếu đang ngủ, để tiếp tục tính
+    Serial.println("[MPU6050] Sleep duration reset");
 }

@@ -29,8 +29,11 @@ public:
     /// @param hr Nhịp tim (BPM)
     /// @param spo2 Độ bão hòa oxy (%)
     /// @param steps Số bước chân hiện tại
+    /// @param alertScore Điểm cảnh báo từ ML (0-1)
+    /// @param activityStatus Trạng thái hoạt động (0-3)
+    /// @param sleepDurationMin Thời gian ngủ (phút)
     /// @return true nếu buffer đầy sau khi thêm
-    bool addSample(float hr, float spo2, uint32_t steps);
+    bool addSample(float hr, float spo2, uint32_t steps, float alertScore, uint8_t activityStatus, uint16_t sleepDurationMin);
 
     /// @brief Kiểm tra xem buffer có đầy không
     /// @return true nếu buffer đầy
@@ -61,7 +64,7 @@ public:
     HealthDataPacket getLatestSample() const;
 
 private:
-    HealthDataPacket buffer_[HR_BUFFER_SIZE]; ///< Buffer lưu trữ (dùng struct chung)
+    HealthDataPacket buffer_[HR_BUFFER_SIZE]; ///< Buffer lưu trữ packets (18 bytes each)
     uint16_t count_;                          ///< Số mẫu hiện có
     uint16_t head_;                           ///< Vị trí ghi tiếp theo
     unsigned long lastSendMs_;                ///< Thời điểm gửi lần cuối

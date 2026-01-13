@@ -20,9 +20,9 @@
 #define BATTERY_ADC_PIN 0 // GPIO0 (ADC1_CH0) - kết nối với voltage divider
 
 // === Buffer và timing ===
-#define HR_BUFFER_SIZE 10           // 100 samples = 50 giây (2 sample/giây)
+#define HR_BUFFER_SIZE 100           // 600 samples = 300 giây (2 sample/giây)
 #define HR_SAMPLE_INTERVAL_MS 500   // Đọc HR mỗi 0.5 giây
-#define DATA_SEND_INTERVAL_MS 60000 // Gửi dữ liệu mỗi 1 phút (60000ms)
+#define DATA_SEND_INTERVAL_MS 300000 // Gửi dữ liệu mỗi 5 phút (300000ms)
 
 // === Battery voltage thresholds ===
 #define BATTERY_FULL_VOLTAGE 4.2  // Voltage khi pin đầy (Li-Po)

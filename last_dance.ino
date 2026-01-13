@@ -33,6 +33,8 @@ DataBuffer dataBuffer;
 // === Timing variables ===
 static unsigned long lastHrReadMs = 0;
 static unsigned long lastBatteryReadMs = 0;
+static unsigned long lastAlertSentMs = 0;             // Thời điểm gửi alert cuối cùng
+static const unsigned long ALERT_COOLDOWN_MS = 30000; // 30 giây cooldown giữa các alert
 static bool mlInitialized = false;
 static bool max30102Ready = false; // Cờ kiểm tra MAX30102 đã khởi tạo chưa
 static bool isSending = false;     // Cờ đang gửi dữ liệu - tránh gửi lặp
@@ -46,7 +48,7 @@ struct AlertData
 };
 
 /**
- * @brief Kiểm tra xem đã qua ngày mới chưa để reset số bước
+ * @brief Kiểm tra xem đã qua ngày mới chưa để reset số bước và thời gian ngủ
  */
 void checkNewDay()
 {
@@ -68,15 +70,22 @@ void checkNewDay()
   // Nếu ngày hiện tại khác ngày đã xử lý -> Qua ngày mới
   if (timeinfo->tm_mday != lastDayProcessed)
   {
-    Serial.printf("[System] New day detected: %d -> %d. Resetting steps.\n",
-                  lastDayProcessed, timeinfo->tm_mday);
+    Serial.println("\n========== [SYSTEM] NEW DAY DETECTED ==========");
+    Serial.printf("[SYSTEM] Date changed: %d -> %d\n", lastDayProcessed, timeinfo->tm_mday);
+    Serial.printf("[SYSTEM] New date: %02d/%02d/%04d\n",
+                  timeinfo->tm_mday, timeinfo->tm_mon + 1, timeinfo->tm_year + 1900);
+    Serial.println("[SYSTEM] Resetting daily counters...");
     mpuManager.resetStepCount();
+    mpuManager.resetSleepDuration(); // Reset sleep duration
     lastDayProcessed = timeinfo->tm_mday;
+    Serial.println("[SYSTEM] Daily reset complete!");
+    Serial.println("===============================================\n");
   }
 }
 
 /**
  * @brief Xử lý ML với dữ liệu HR/SpO2 mới nhất từ buffer
+ * Context-aware: Chỉ gửi alert khi phù hợp với trạng thái hoạt động
  * @param hr Nhịp tim mới đọc được
  * @param spo2 SpO2 mới đọc được
  */
@@ -98,14 +107,48 @@ void processML(float hr, float spo2)
   float bmi = profile.bmi;
   float score = mlModel.runInference(hr, spo2, bmi);
 
-  if (score > 1)
+  if (score > 0.95) // Alert threshold
   {
-    Serial.printf("[ML] ALERT: Score=%.4f\n", score);
+    // Context-aware alert filtering
+    ActivityStatus activity = mpuManager.getActivityStatus();
+    bool shouldAlert = true;
 
-    if (bleManager.isClientConnected())
+    // Suppress alert during sleep + low HR (normal for sleep)
+    if (activity == ACTIVITY_SLEEPING && hr < 60)
     {
-      uint32_t steps = mpuManager.getStepCount();
-      bleManager.notifyHealthDataWithAlert(hr, spo2, steps, score);
+      Serial.println("[ML] Alert suppressed: Sleeping + Low HR (normal)");
+      shouldAlert = false;
+    }
+    // Suppress alert during running + high HR (normal for exercise)
+    else if (activity == ACTIVITY_RUNNING && hr > 120)
+    {
+      Serial.println("[ML] Alert suppressed: Running + High HR (normal)");
+      shouldAlert = false;
+    }
+
+    if (shouldAlert)
+    {
+      Serial.printf("[ML] ALERT detected: Score=%.4f (Activity=%d, HR=%.1f)\n", score, activity, hr);
+
+      // Kiểm tra cooldown - chỉ gửi alert nếu đã qua 30 giây từ alert trước
+      unsigned long now = millis();
+      if (now - lastAlertSentMs >= ALERT_COOLDOWN_MS)
+      {
+        if (bleManager.isClientConnected())
+        {
+          Serial.println("[ML] ⚠️ Sending ALERT packet (cooldown passed)");
+          uint32_t steps = mpuManager.getStepCount();
+          uint16_t sleepDuration = mpuManager.getSleepDurationMinutes();
+          bleManager.notifyHealthDataExtended(hr, spo2, steps, score,
+                                              (uint8_t)activity, sleepDuration);
+          lastAlertSentMs = now; // Cập nhật thời gian gửi alert
+        }
+      }
+      else
+      {
+        unsigned long remaining = ALERT_COOLDOWN_MS - (now - lastAlertSentMs);
+        Serial.printf("[ML] Alert suppressed (cooldown: %lu sec remaining)\n", remaining / 1000);
+      }
     }
   }
 }
@@ -134,29 +177,35 @@ void sendBatchData()
   // Đặt cờ đang gửi
   isSending = true;
 
-  Serial.println("[Main] ========== SENDING BATCH DATA ==========");
-  Serial.printf("[Main] Buffer has %d samples ready to send\n", dataBuffer.getCount());
+  Serial.println("\n========== [BATCH] PREPARING DATA ==========");
+  Serial.printf("[BATCH] Buffer count: %d/%d samples\n",
+                dataBuffer.getCount(), HR_BUFFER_SIZE);
 
-  // Chuẩn bị buffer để gửi
-  uint8_t binaryBuffer[4096];
+  // Chuẩn bị buffer để gửi - cần 600 * 18 = 10800 bytes
+  static uint8_t binaryBuffer[12000]; // Static để tránh stack overflow
   size_t len = dataBuffer.getBinaryData(binaryBuffer, sizeof(binaryBuffer));
 
   if (len > 0)
   {
-    Serial.printf("[Main] Binary data generated: %d bytes\n", len);
+    Serial.printf("[BATCH] Binary data size: %d bytes\n", len);
+    Serial.printf("[BATCH] Sending to BLE...\n");
+
     if (bleManager.notifyHealthDataBatch(binaryBuffer, len))
     {
-      Serial.println("[Main] Batch data sent successfully");
+      Serial.println("[BATCH] Success! Clearing buffer...");
       dataBuffer.clear();
-      Serial.println("[Main] Buffer cleared");
     }
     else
     {
-      Serial.println("[Main] Failed to send batch data");
+      Serial.println("[BATCH] Failed to send");
     }
   }
+  else
+  {
+    Serial.println("[BATCH] No data to send");
+  }
 
-  Serial.println("[Main] ==========================================");
+  Serial.println("============================================\n");
 
   // Xóa cờ đang gửi
   isSending = false;
@@ -183,38 +232,45 @@ void readAndBufferHR()
   {
     Max30102Data data = max30102Manager.getCurrentData();
 
-    // Thêm vào buffer
-    // bool bufferFull = dataBuffer.addSample(data.hr, data.spo2);
-    // Tạm thời disable buffer để gửi realtime
-    bool bufferFull = false;
-
-    // Chạy ML với dữ liệu mới nhất (đồng bộ với việc đọc HR)
-    // Chỉ chạy nếu được enable qua BLE
+    // Chạy ML với dữ liệu mới nhất (chỉ chạy nếu được enable)
     if (bleManager.isMLEnabled())
     {
       processML(data.hr, data.spo2);
     }
+
+    // Lấy thông tin chung cho cả 2 mode
+    uint32_t steps = mpuManager.getStepCount();
+    ActivityStatus activity = mpuManager.getActivityStatus();
+    uint16_t sleepDuration = mpuManager.getSleepDurationMinutes();
+    float alertScore = 0.0f;
 
     // Xử lý gửi dữ liệu dựa trên chế độ
     DataTransmissionMode mode = bleManager.getDataTransmissionMode();
 
     if (mode == MODE_REALTIME)
     {
-      // Chế độ Realtime: Gửi ngay lập tức, KHÔNG lưu buffer
+      // Chế độ Realtime: Gửi ngay lập tức với extended data
       if (bleManager.isClientConnected())
       {
-        uint32_t steps = mpuManager.getStepCount();
-        bleManager.notifyHealthData(data.hr, data.spo2, steps);
+        Serial.printf("[REALTIME] Sending: HR=%.0f, SpO2=%.0f, Steps=%u, Activity=%d\n",
+                      data.hr, data.spo2, steps, (int)activity);
+
+        // Send extended packet (18 bytes)
+        bleManager.notifyHealthDataExtended(data.hr, data.spo2, steps, alertScore,
+                                            (uint8_t)activity, sleepDuration);
       }
     }
     else // MODE_BATCH
     {
-      // Chế độ Batch: Lưu vào buffer, KHÔNG gửi ngay
-      uint32_t currentSteps = mpuManager.getStepCount();
-      bool bufferFull = dataBuffer.addSample(data.hr, data.spo2, currentSteps);
+      // Chế độ Batch: CHỈ lưu vào buffer, KHÔNG gửi realtime
+      Serial.printf("[BATCH] Buffering: HR=%.0f, SpO2=%.0f, Steps=%u\n",
+                    data.hr, data.spo2, steps);
+
+      bool bufferFull = dataBuffer.addSample(data.hr, data.spo2, steps, alertScore,
+                                             (uint8_t)activity, sleepDuration);
       if (bufferFull)
       {
-        Serial.println("[Main] Buffer full - ready to send batch");
+        Serial.println("[BATCH] ⚠️ Buffer full - will send on next cycle");
       }
     }
   }
@@ -278,10 +334,17 @@ void loop()
   // 1. Đọc HR mỗi 1 giây và lưu vào buffer
   readAndBufferHR();
 
-  // 2. Cập nhật step counter nếu được bật
+  // 2. Cập nhật step counter và sleep detection nếu được bật
   if (bleManager.isStepCountEnabled())
   {
     mpuManager.update();
+
+    // Update sleep detection với heart rate data nếu có
+    if (max30102Ready && max30102Manager.hasValidData())
+    {
+      Max30102Data data = max30102Manager.getCurrentData();
+      mpuManager.updateSleepDetection((uint8_t)data.hr);
+    }
   }
 
   // 2.5 Kiểm tra ngày mới để reset bước chân

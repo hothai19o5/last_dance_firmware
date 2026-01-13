@@ -23,9 +23,12 @@ DataBuffer::DataBuffer()
  * @param hr Nhịp tim (BPM) - sẽ được làm tròn và giới hạn 0-255
  * @param spo2 Độ bão hòa oxy (%) - sẽ được làm tròn và giới hạn 0-100
  * @param steps Số bước chân hiện tại
+ * @param alertScore Điểm cảnh báo từ ML (0-1)
+ * @param activityStatus Trạng thái hoạt động (0-3)
+ * @param sleepDurationMin Thời gian ngủ (phút)
  * @return true nếu buffer đầy sau khi thêm
  */
-bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
+bool DataBuffer::addSample(float hr, float spo2, uint32_t steps, float alertScore, uint8_t activityStatus, uint16_t sleepDurationMin)
 {
     // Ghi nhận thời điểm mẫu đầu tiên
     if (count_ == 0)
@@ -33,12 +36,18 @@ bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
         firstSampleMs_ = millis();
     }
 
-    // Tạo mẫu mới
+    // Tạo mẫu mới (18 bytes)
     HealthDataPacket sample;
     sample.hr = (uint8_t)constrain(hr, 0, 255);
     sample.spo2 = (uint8_t)constrain(spo2, 0, 100);
     sample.steps = steps;
-    
+    sample.alertScore = alertScore;
+    sample.activityStatus = activityStatus;
+    sample.sleepDurationMin = sleepDurationMin;
+    sample.reserved[0] = 0;
+    sample.reserved[1] = 0;
+    sample.reserved[2] = 0;
+
     // Sử dụng Unix timestamp thực tế
     time_t now;
     time(&now);
@@ -53,8 +62,8 @@ bool DataBuffer::addSample(float hr, float spo2, uint32_t steps)
         count_++;
     }
 
-    Serial.printf("[Buffer] Added sample: HR=%d, SpO2=%d, Steps=%u, Count=%d/%d, TS=%u\n",
-                  sample.hr, sample.spo2, sample.steps, count_, HR_BUFFER_SIZE, sample.timestamp);
+    Serial.printf("[Buffer] Added Extended sample: HR=%d, SpO2=%d, Steps=%u, Alert=%.2f, Activity=%d, Sleep=%dmin, Count=%d/%d\n",
+                  sample.hr, sample.spo2, sample.steps, sample.alertScore, sample.activityStatus, sample.sleepDurationMin, count_, HR_BUFFER_SIZE);
 
     return isFull();
 }
@@ -104,7 +113,7 @@ uint16_t DataBuffer::getCount() const
 /**
  * @brief Lấy dữ liệu binary để gửi qua BLE
  *
- * Chỉ đơn giản là copy các struct HealthDataPacket từ buffer vòng vào output buffer.
+ * Copy các struct HealthDataPacket từ buffer vòng vào output buffer.
  *
  * @param output Buffer đầu ra
  * @param maxLen Kích thước tối đa của buffer đầu ra
@@ -117,21 +126,21 @@ size_t DataBuffer::getBinaryData(uint8_t *output, size_t maxLen)
 
     if (totalSize > maxLen)
     {
-        Serial.println("[Buffer] Output buffer too small!");
+        Serial.printf("[Buffer] Output buffer too small! Need %d bytes, have %d\n", totalSize, maxLen);
         return 0;
     }
 
     // Duyệt buffer và copy vào output
     // Lưu ý buffer là circular, nên cần duyệt từ phần tử cũ nhất
     uint16_t startIdx = (count_ >= HR_BUFFER_SIZE) ? head_ : 0;
-    
+
     for (uint16_t i = 0; i < count_; i++)
     {
         uint16_t idx = (startIdx + i) % HR_BUFFER_SIZE;
         memcpy(output + (i * packetSize), &buffer_[idx], packetSize);
     }
 
-    Serial.printf("[Buffer] Prepared binary data: %d samples (%d bytes)\n", count_, totalSize);
+    Serial.printf("[Buffer] Prepared Extended batch: %d samples (%d bytes, %d bytes/sample)\n", count_, totalSize, packetSize);
 
     return totalSize;
 }
@@ -163,7 +172,7 @@ HealthDataPacket DataBuffer::getLatestSample() const
 {
     if (count_ == 0)
     {
-        HealthDataPacket empty = {0, 0, 0, 0};
+        HealthDataPacket empty = {0, 0, 0, 0, 0.0f, 0, 0, {0, 0, 0}};
         return empty;
     }
 

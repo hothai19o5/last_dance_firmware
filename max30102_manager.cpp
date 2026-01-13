@@ -44,19 +44,19 @@ bool Max30102Manager::beginOnWire(TwoWire &wire)
 
     Serial.println("[MAX30102] Initialized on shared Wire bus.");
 
-    // Cấu hình cảm biến cho chế độ đọc NHANH
-    // ledBrightness: 0x3F (tăng lên để bù pulse width ngắn)
+    // Cấu hình cảm biến với LED brightness thấp hơn để tránh ADC overflow
+    // ledBrightness: 0x1F (31 - vừa phải)
     // sampleAverage: 1 (không average - đọc nhanh nhất)
     // ledMode: 2 (Red+IR)
-    // sampleRate: 400 (400 samples/sec - nhanh hơn)
+    // sampleRate: 400 (400 samples/sec)
     // pulseWidth: 118 (ngắn hơn để sample rate cao hơn)
     // adcRange: 4096
-    particleSensor.setup(0x3F, 1, 2, 400, 118, 4096);
+    particleSensor.setup(0x1F, 1, 2, 400, 118, 4096);
 
-    // Tăng độ sáng LED để có tín hiệu mạnh hơn
-    particleSensor.setPulseAmplitudeRed(0x3F); // Tăng gấp đôi (63)
+    // Độ sáng LED vừa phải để tránh saturation
+    particleSensor.setPulseAmplitudeRed(0x1F); // 31 (vừa phải)
     particleSensor.setPulseAmplitudeGreen(0);  // Tắt LED xanh
-    particleSensor.setPulseAmplitudeIR(0x3F);  // Tăng gấp đôi (63)
+    particleSensor.setPulseAmplitudeIR(0x1F);  // 31 (vừa phải)
 
     // Xóa FIFO để bắt đầu sạch
     particleSensor.clearFIFO();
@@ -88,6 +88,9 @@ void Max30102Manager::readSensorData()
     static uint32_t sampleCount = 0;
     static uint32_t lowIrCount = 0;
     static uint32_t processedCount = 0;
+    static long minIR = 999999;
+    static long maxIR = 0;
+    static long sumIR = 0;
 
     // Đọc tất cả samples có sẵn (không chờ)
     while (particleSensor.available())
@@ -97,14 +100,39 @@ void Max30102Manager::readSensorData()
         particleSensor.nextSample();
         sampleCount++;
 
-        // Giảm ngưỡng IR xuống 30000 (với pulse width ngắn hơn, tín hiệu yếu hơn)
-        if (irValue < 30000)
+        // Track IR statistics
+        if (irValue < minIR)
+            minIR = irValue;
+        if (irValue > maxIR)
+            maxIR = irValue;
+        sumIR += irValue;
+
+        // Kiểm tra ADC overflow (giá trị max của 18-bit ADC)
+        if (irValue >= 262143)
         {
-            sensorStatus = 1;
+            // ADC overflow - LED quá sáng hoặc không có ngón tay
+            lowIrCount++; // Đếm vào lỗi
+            continue;
+        }
+
+        // Kiểm tra IR quá thấp (không có ngón tay)
+        if (irValue < 10000)
+        {
+            // IR quá yếu - không có ngón tay hoặc ngón tay không đủ áp lực
             lowIrCount++;
             continue; // Bỏ qua sample này, đọc tiếp
         }
 
+        // Kiểm tra range hợp lệ: 10000 < IR < 200000
+        if (irValue > 200000)
+        {
+            // IR quá mạnh - có thể LED quá sáng
+            lowIrCount++;
+            continue;
+        }
+
+        // Nếu IR đủ mạnh, coi như có ngón tay (ngay cả khi chưa phát hiện beat)
+        // sensorStatus sẽ được set về 0 khi có beat hợp lệ
         processedCount++;
 
         // Phát hiện nhịp tim từ tín hiệu IR
@@ -149,26 +177,75 @@ void Max30102Manager::readSensorData()
                 }
 
                 sensorStatus = 0;
-                Serial.printf("[HR] *** VALID: HR=%d, SpO2=%.0f%%, Ratio=%.2f ***\n",
-                              beatAvg, currentSPO2, (float)redValue / (float)irValue);
+                Serial.println("\n========================================");
+                Serial.printf("[HR] \u2705 VALID READING\n");
+                Serial.printf("[HR]   Heart Rate: %d BPM\n", beatAvg);
+                Serial.printf("[HR]   SpO2: %.0f%%\n", currentSPO2);
+                Serial.printf("[HR]   Red/IR Ratio: %.2f\n", (float)redValue / (float)irValue);
+                Serial.println("========================================\n");
             }
             else
             {
-                Serial.printf("[HR] BPM out of range: %.1f\n", beatsPerMinute);
+                Serial.printf("[HR] \u274c BPM out of range: %.1f\n", beatsPerMinute);
             }
         }
     }
 
-    // In debug mỗi 2 giây
-    if (millis() - lastDebugMs > 2000)
+    // In debug mỗi 1 giây với thông tin IR chi tiết
+    if (millis() - lastDebugMs > 1000)
     {
-        Serial.printf("[HR-DBG] Total: %d, Processed: %d, LowIR: %d, Status: %s, HR=%.0f\n",
+        long avgIR = sampleCount > 0 ? sumIR / sampleCount : 0;
+
+        // Nếu có IR samples được xử lý nhưng không có beat trong 10 giây, reset status
+        if (processedCount > 0 && avgIR > 10000)
+        {
+            // Có tín hiệu IR tốt
+            if (millis() - lastBeat > 10000)
+            {
+                // Không có beat trong 10 giây → có thể ngón tay không đúng vị trí
+                sensorStatus = 1;
+                Serial.println("[HR-DBG] No beat detected for 10s - check finger placement");
+            }
+        }
+        else if (processedCount == 0)
+        {
+            // Không có tín hiệu IR → chắc chắn không có ngón tay
+            sensorStatus = 1;
+        }
+
+        Serial.printf("[HR-DBG] Total: %d, Processed: %d, Rejected: %d, Status: %s, HR=%.0f\n",
                       sampleCount, processedCount, lowIrCount,
                       sensorStatus == 0 ? "OK" : "NO_FINGER",
                       currentHR);
+        Serial.printf("[HR-DBG] IR Range: Min=%ld, Max=%ld, Avg=%ld",
+                      minIR, maxIR, avgIR);
+
+        // Cảnh báo nếu có overflow
+        if (maxIR >= 262143)
+        {
+            Serial.print(" ADC OVERFLOW! Reduce LED brightness");
+        }
+        else if (avgIR < 10000)
+        {
+            Serial.print(" IR too low - no finger detected");
+        }
+        else if (avgIR > 200000)
+        {
+            Serial.print(" IR too high - reduce LED brightness");
+        }
+        else if (processedCount > 0)
+        {
+            Serial.print(" IR in valid range");
+        }
+        Serial.println();
+
+        // Reset counters
         sampleCount = 0;
         processedCount = 0;
         lowIrCount = 0;
+        minIR = 999999;
+        maxIR = 0;
+        sumIR = 0;
         lastDebugMs = millis();
     }
 }

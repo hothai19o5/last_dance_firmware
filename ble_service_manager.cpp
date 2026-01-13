@@ -164,8 +164,11 @@ void BLEServiceManager::onConnect(BLEServer *pServer)
 void BLEServiceManager::onDisconnect(BLEServer *pServer)
 {
     clientConnected_ = false;
-    Serial.println("[BLE] Client disconnected. Restarting advertising...");
-    BLEDevice::startAdvertising();
+    Serial.println("\n========== [BLE] CLIENT DISCONNECTED ==========");
+    Serial.println("[BLE] Restarting advertising...");
+    pServer->startAdvertising();
+    Serial.println("[BLE] Advertising restarted - Ready for new connections");
+    Serial.println("===============================================\n");
 }
 
 /**
@@ -183,31 +186,36 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
 {
     lastActivityMs_ = millis(); // Cập nhật thời điểm hoạt động cuối cùng
 
+    // Lấy UUID và chuyển thành lowercase để so sánh
     std::string uuid = pCharacteristic->getUUID().toString().c_str();
 
-    // Cập nhật BMI
-    if (uuid == BMI_CHAR_UUID)
+    // Debug: In UUID nhận được
+    Serial.printf("[BLE] onWrite called! UUID: %s, DataLen: %d\n",
+                  uuid.c_str(), pCharacteristic->getLength());
+
+    // Cập nhật BMI - so sánh lowercase
+    if (uuid == "00002a98-0000-1000-8000-00805f9b34fb")
     {
         float bmi = *(float *)pCharacteristic->getData();
         userProfile_.bmi = bmi;
         Serial.printf("[BLE] Updated BMI: %.2f\n", bmi);
     }
     // Cập nhật bật/tắt đếm bước
-    else if (uuid == STEP_COUNT_ENABLED_CHAR_UUID)
+    else if (uuid == "00002a81-0000-1000-8000-00805f9b34fb")
     {
         uint8_t enabled = *(uint8_t *)pCharacteristic->getData();
         stepCountEnabled_ = (enabled != 0);
         Serial.printf("[BLE] Step count enabled: %s\n", stepCountEnabled_ ? "YES" : "NO");
     }
     // Cập nhật bật/tắt ML
-    else if (uuid == ML_ENABLED_CHAR_UUID)
+    else if (uuid == "00002a99-0000-1000-8000-00805f9b34fb")
     {
         uint8_t enabled = *(uint8_t *)pCharacteristic->getData();
         mlEnabled_ = (enabled != 0);
         Serial.printf("[BLE] ML enabled: %s\n", mlEnabled_ ? "YES" : "NO");
     }
     // Cập nhật thời gian hệ thống
-    else if (uuid == TIME_SYNC_CHAR_UUID)
+    else if (uuid == "00002a2b-0000-1000-8000-00805f9b34fb")
     {
         if (pCharacteristic->getLength() >= 4)
         {
@@ -224,9 +232,14 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
                           t->tm_mday, t->tm_mon + 1, t->tm_year + 1900,
                           timestamp);
         }
+        else
+        {
+            Serial.printf("[BLE] Time sync failed: Invalid data length (%d bytes)\n",
+                          pCharacteristic->getLength());
+        }
     }
     // Cập nhật chế độ truyền dữ liệu
-    else if (uuid == DATA_TRANSMISSION_MODE_CHAR_UUID)
+    else if (uuid == "00002a9a-0000-1000-8000-00805f9b34fb")
     {
         uint8_t mode = *(uint8_t *)pCharacteristic->getData();
         if (mode == 0)
@@ -239,6 +252,14 @@ void BLEServiceManager::onWrite(BLECharacteristic *pCharacteristic)
             dataTransmissionMode_ = MODE_BATCH;
             Serial.println("[BLE] Mode switched to BATCH");
         }
+        else
+        {
+            Serial.printf("[BLE] Unknown mode: %d\n", mode);
+        }
+    }
+    else
+    {
+        Serial.printf("[BLE] Unknown characteristic write: %s\n", uuid.c_str());
     }
 }
 
@@ -254,70 +275,95 @@ void BLEServiceManager::notifyHealthData(float hr, float spo2, uint32_t steps)
     // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
     {
+        Serial.println("[BLE] Cannot send: Client not connected");
         return;
     }
 
+    // Use unified HealthDataPacket (18 bytes)
     HealthDataPacket packet;
-    packet.hr = (uint8_t)hr;
-    packet.spo2 = (uint8_t)spo2;
-    packet.steps = steps;
-    
+
     time_t now;
     time(&now);
     packet.timestamp = (uint32_t)now;
+    packet.steps = steps;
+    packet.hr = (uint8_t)hr;
+    packet.spo2 = (uint8_t)spo2;
+    packet.alertScore = 0.0f;  // No alert
+    packet.activityStatus = 0; // Unknown
+    packet.sleepDurationMin = 0;
+    packet.reserved[0] = 0;
+    packet.reserved[1] = 0;
+    packet.reserved[2] = 0;
 
-    // Cập nhật giá trị của Characteristic (10 bytes)
     pHealthDataBatchChar_->setValue((uint8_t *)&packet, sizeof(packet));
     pHealthDataBatchChar_->notify();
 
-    Serial.printf("[BLE] Notified binary data: HR=%d, SpO2=%d, Steps=%d, TS=%u\n",
+    Serial.printf("[BLE-TX] Health Data: HR=%d, SpO2=%d, Steps=%d, TS=%u\n",
                   packet.hr, packet.spo2, packet.steps, packet.timestamp);
 }
 
 /**
  * @brief Gửi dữ liệu sức khỏe kèm cảnh báo (nếu có)
+ * @deprecated Use notifyHealthDataExtended instead
+ */
+void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float alertScore)
+{
+    // Delegate to extended version with default activity/sleep values
+    notifyHealthDataExtended(hr, spo2, steps, alertScore, 0, 0);
+}
+
+/**
+ * @brief Gửi dữ liệu sức khỏe (18 bytes) với activity status và sleep duration
  *
  * @param hr Nhịp tim (BPM)
  * @param spo2 Độ bão hòa oxy (%)
  * @param steps Tổng số bước
- * @param alertScore Điểm cảnh báo từ mô hình ML (0-1)
+ * @param alertScore Điểm cảnh báo từ ML (0-1)
+ * @param activityStatus Trạng thái hoạt động (0=Still, 1=Walking, 2=Running, 3=Sleeping)
+ * @param sleepDurationMin Thời gian ngủ (phút)
  */
-void BLEServiceManager::notifyHealthDataWithAlert(float hr, float spo2, uint32_t steps, float alertScore)
+void BLEServiceManager::notifyHealthDataExtended(float hr, float spo2, uint32_t steps,
+                                                 float alertScore, uint8_t activityStatus,
+                                                 uint16_t sleepDurationMin)
 {
-    // Không gửi nếu ứng dụng chưa kết nối
     if (!clientConnected_)
     {
         return;
     }
 
-    // Packet structure: [HealthDataPacket (10 bytes)] + [AlertScore (4 bytes)]
-    // Total: 14 bytes
-    
-    uint8_t buffer[sizeof(HealthDataPacket) + sizeof(float)];
-    
-    HealthDataPacket *packet = (HealthDataPacket *)buffer;
-    packet->hr = (uint8_t)hr;
-    packet->spo2 = (uint8_t)spo2;
-    packet->steps = steps;
-    
+    // Use unified HealthDataPacket (18 bytes)
+    HealthDataPacket packet;
+
     time_t now;
     time(&now);
-    packet->timestamp = (uint32_t)now;
+    packet.timestamp = (uint32_t)now;
+    packet.steps = steps;
+    packet.hr = (uint8_t)hr;
+    packet.spo2 = (uint8_t)spo2;
+    packet.alertScore = alertScore;
+    packet.activityStatus = activityStatus;
+    packet.sleepDurationMin = sleepDurationMin;
+    packet.reserved[0] = 0;
+    packet.reserved[1] = 0;
+    packet.reserved[2] = 0;
 
-    // Copy alert score float to the end of buffer
-    memcpy(buffer + sizeof(HealthDataPacket), &alertScore, sizeof(float));
-
-    // Cập nhật giá trị của Characteristic
-    pHealthDataBatchChar_->setValue(buffer, sizeof(buffer));
-
-    // Gửi thông báo đến ứng dụng
+    pHealthDataBatchChar_->setValue((uint8_t *)&packet, sizeof(packet));
     pHealthDataBatchChar_->notify();
 
-    Serial.printf("[BLE] Notified binary data WITH ALERT: Score=%.4f\n", alertScore);
+    Serial.printf("[BLE] Packet sent: HR=%d SpO2=%d Steps=%d Alert=%.2f Activity=%d Sleep=%dmin\n",
+                  packet.hr, packet.spo2, packet.steps, alertScore,
+                  activityStatus, sleepDurationMin);
 }
 
 /**
  * @brief Gửi batch dữ liệu HR/SpO2 qua BLE (Binary Array)
+ *
+ * Chia dữ liệu thành chunks nhỏ hơn MTU để đảm bảo gửi thành công.
+ * Mỗi chunk có header 4 bytes: [chunkIndex(1), totalChunks(1), packetCount(2)]
+ *
+ * @param data Dữ liệu binary (array of HealthDataPacket, each 18 bytes)
+ * @param len Kích thước dữ liệu
+ * @return true nếu gửi thành công
  */
 bool BLEServiceManager::notifyHealthDataBatch(uint8_t *data, size_t len)
 {
@@ -327,12 +373,57 @@ bool BLEServiceManager::notifyHealthDataBatch(uint8_t *data, size_t len)
         return false;
     }
 
-    Serial.printf("[BLE] Sending binary batch data: %d bytes\n", len);
+    // MTU có thể không đạt 512 bytes trên một số thiết bị Android
+    // Để an toàn, giảm xuống 13 packets/chunk (13 * 18 = 234 bytes + 4 header = 238 bytes)
+    // Điều này đảm bảo hoạt động với MTU tối thiểu 247 bytes (phổ biến trên Android)
+    const size_t HEADER_SIZE = 4;                        // chunkIndex(1) + totalChunks(1) + totalPackets(2)
+    const size_t PACKET_SIZE = sizeof(HealthDataPacket); // 18 bytes
+    const size_t MAX_PACKETS_PER_CHUNK = 13;             // 13 * 18 = 234 bytes (safe for most MTU)
+    const size_t MAX_CHUNK_DATA = MAX_PACKETS_PER_CHUNK * PACKET_SIZE;
 
-    // Gửi toàn bộ dữ liệu một lần bằng uint8_t array
-    // setValue với uint8_t* và length sẽ gửi toàn bộ data
-    pHealthDataBatchChar_->setValue(data, len);
-    pHealthDataBatchChar_->notify();
+    size_t totalPackets = len / PACKET_SIZE;
+    size_t totalChunks = (totalPackets + MAX_PACKETS_PER_CHUNK - 1) / MAX_PACKETS_PER_CHUNK;
+
+    Serial.println("\n========== [BLE-TX] BATCH DATA ==========");
+    Serial.printf("[BLE-TX] Total: %d bytes, %d packets\n", len, totalPackets);
+    Serial.printf("[BLE-TX] Splitting into %d chunks (max %d packets each)\n", totalChunks, MAX_PACKETS_PER_CHUNK);
+
+    // Buffer cho mỗi chunk: header + data
+    uint8_t chunkBuffer[HEADER_SIZE + MAX_CHUNK_DATA];
+
+    for (size_t chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++)
+    {
+        size_t startPacket = chunkIdx * MAX_PACKETS_PER_CHUNK;
+        size_t packetsInChunk = min(MAX_PACKETS_PER_CHUNK, totalPackets - startPacket);
+        size_t dataOffset = startPacket * PACKET_SIZE;
+        size_t chunkDataLen = packetsInChunk * PACKET_SIZE;
+
+        // Build header
+        chunkBuffer[0] = (uint8_t)chunkIdx;                     // Chunk index (0-based)
+        chunkBuffer[1] = (uint8_t)totalChunks;                  // Total chunks
+        chunkBuffer[2] = (uint8_t)(totalPackets & 0xFF);        // Total packets (low byte)
+        chunkBuffer[3] = (uint8_t)((totalPackets >> 8) & 0xFF); // Total packets (high byte)
+
+        // Copy data
+        memcpy(chunkBuffer + HEADER_SIZE, data + dataOffset, chunkDataLen);
+
+        size_t totalChunkLen = HEADER_SIZE + chunkDataLen;
+
+        Serial.printf("[BLE-TX] Chunk %d/%d: %d packets, %d bytes\n",
+                      chunkIdx + 1, totalChunks, packetsInChunk, totalChunkLen);
+
+        pHealthDataBatchChar_->setValue(chunkBuffer, totalChunkLen);
+        pHealthDataBatchChar_->notify();
+
+        // Delay để BLE stack xử lý (quan trọng khi gửi nhiều chunks)
+        if (chunkIdx < totalChunks - 1)
+        {
+            delay(50);
+        }
+    }
+
+    Serial.println("[BLE-TX] All chunks sent successfully!");
+    Serial.println("=========================================\n");
 
     lastActivityMs_ = millis();
     return true;
@@ -349,7 +440,11 @@ void BLEServiceManager::notifyBatteryLevel(uint8_t batteryPercent)
     {
         pBatteryLevelChar_->notify();
         lastActivityMs_ = millis();
-        Serial.printf("[BLE] Battery level notified: %d%%\n", batteryPercent);
+        Serial.printf("[BLE-TX] Battery: %d%%\n", batteryPercent);
+    }
+    else
+    {
+        Serial.printf("[Battery] Level: %d%% (not sent - no connection)\n", batteryPercent);
     }
 }
 
