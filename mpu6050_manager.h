@@ -79,6 +79,18 @@ public:
     /// @param heartRate Nhịp tim hiện tại (BPM)
     void updateSleepDetection(uint8_t heartRate);
 
+    /// @brief Đặt MPU6050 vào chế độ sleep để tiết kiệm năng lượng
+    /// Gọi khi tắt chức năng đếm bước
+    void sleep();
+
+    /// @brief Đánh thức MPU6050 từ chế độ sleep
+    /// Gọi khi bật lại chức năng đếm bước
+    void wake();
+
+    /// @brief Kiểm tra xem MPU6050 có đang ở chế độ sleep không
+    /// @return true nếu đang sleep, false nếu đang hoạt động
+    bool isAsleep() const;
+
 private:
     /// @brief Ghi một giá trị vào thanh ghi I2C của MPU6050
     bool writeReg(uint8_t reg, uint8_t val);
@@ -120,4 +132,6 @@ private:
     bool isSleeping_;                                                    ///< Trạng thái hiện tại có đang ngủ không
     uint32_t lowActivityDurationMs_;                                     ///< Thời gian liên tục ít hoạt động
     static constexpr uint32_t SLEEP_DETECT_THRESHOLD_MS = 5 * 60 * 1000; ///< 5 phút không hoạt động
+
+    bool isSensorAsleep_; ///< Trạng thái sleep của cảm biến (tiết kiệm năng lượng)
 };

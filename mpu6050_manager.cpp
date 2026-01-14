@@ -23,7 +23,7 @@ MPU6050Manager::MPU6050Manager()
       activityStatus_(ACTIVITY_RESTING), stepsSinceLastCheck_(0),
       lastActivityCheckMs_(0), activityCheckIntervalMs_(1000),
       sleepDurationSeconds_(0), sleepStartMs_(0), isSleeping_(false),
-      lowActivityDurationMs_(0) {}
+      lowActivityDurationMs_(0), isSensorAsleep_(false) {}
 
 /**
  * @brief Khởi tạo MPU6050 trên bus I2C được chỉ định
@@ -360,4 +360,66 @@ void MPU6050Manager::resetSleepDuration()
     sleepDurationSeconds_ = 0;
     // Không reset sleepStartMs_ nếu đang ngủ, để tiếp tục tính
     Serial.println("[MPU6050] Sleep duration reset");
+}
+
+/**
+ * @brief Đặt MPU6050 vào chế độ sleep để tiết kiệm năng lượng
+ *
+ * Ghi bit SLEEP (bit 6) vào thanh ghi PWR_MGMT_1 (0x6B)
+ * Gọi khi tắt chức năng đếm bước để giảm tiêu thụ điện
+ */
+void MPU6050Manager::sleep()
+{
+    if (isSensorAsleep_)
+    {
+        Serial.println("[MPU6050] Already in sleep mode");
+        return;
+    }
+
+    // Ghi 0x40 (bit 6 = SLEEP) vào PWR_MGMT_1
+    if (writeReg(REG_PWR_MGMT_1, 0x40))
+    {
+        isSensorAsleep_ = true;
+        Serial.println("[MPU6050] Entered sleep mode (power saving)");
+    }
+    else
+    {
+        Serial.println("[MPU6050] Failed to enter sleep mode");
+    }
+}
+
+/**
+ * @brief Đánh thức MPU6050 từ chế độ sleep
+ *
+ * Ghi 0x00 vào thanh ghi PWR_MGMT_1 để tắt bit SLEEP
+ * Gọi khi bật lại chức năng đếm bước
+ */
+void MPU6050Manager::wake()
+{
+    if (!isSensorAsleep_)
+    {
+        Serial.println("[MPU6050] Already awake");
+        return;
+    }
+
+    // Ghi 0x00 vào PWR_MGMT_1 để thoát sleep
+    if (writeReg(REG_PWR_MGMT_1, 0x00))
+    {
+        delay(50); // Đợi sensor ổn định sau khi thức dậy
+        isSensorAsleep_ = false;
+        Serial.println("[MPU6050] Woke up from sleep mode");
+    }
+    else
+    {
+        Serial.println("[MPU6050] Failed to wake up");
+    }
+}
+
+/**
+ * @brief Kiểm tra xem MPU6050 có đang ở chế độ sleep không
+ * @return true nếu đang sleep, false nếu đang hoạt động
+ */
+bool MPU6050Manager::isAsleep() const
+{
+    return isSensorAsleep_;
 }

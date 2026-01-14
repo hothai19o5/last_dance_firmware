@@ -337,6 +337,12 @@ void loop()
   // 2. Cập nhật step counter và sleep detection nếu được bật
   if (bleManager.isStepCountEnabled())
   {
+    // Đảm bảo MPU6050 đang hoạt động (không ở sleep mode)
+    if (mpuManager.isAsleep())
+    {
+      mpuManager.wake();
+    }
+
     mpuManager.update();
 
     // Update sleep detection với heart rate data nếu có
@@ -344,6 +350,14 @@ void loop()
     {
       Max30102Data data = max30102Manager.getCurrentData();
       mpuManager.updateSleepDetection((uint8_t)data.hr);
+    }
+  }
+  else
+  {
+    // Đếm bước đã tắt - đặt MPU6050 vào sleep mode để tiết kiệm năng lượng
+    if (!mpuManager.isAsleep())
+    {
+      mpuManager.sleep();
     }
   }
 
